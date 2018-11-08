@@ -17,6 +17,9 @@ object BankAccountsQuery {
 /**
   * This is a query side in-memory projection of Bank Accounts. If there gets to be a lot of bank accounts
   * consider using Cassandra as the query store. This is not durable across restarts.
+  *
+  * FIXME add a note about that if making it durable you also want to store offsets, as illustrated in
+  * akka-sample-cqrs-scala (PR currently in progress https://github.com/akka/akka-samples/pull/82)
   */
 class BankAccountsQuery extends Actor with TaggedEventSubscription with ActorLogging {
 

@@ -13,6 +13,7 @@ object BankAccountEvents {
   case class InsufficientFunds(accountNumber: AccountNumber, balance: BigDecimal, attemptedWithdrawal: BigDecimal)
     extends BankAccountTransactionalExceptionEvent
 
+  // FIXME use more `sealed trait` to benefit from compiler finding missing cases in pattern match
   trait BankAccountEvent {
     def accountNumber: AccountNumber
   }

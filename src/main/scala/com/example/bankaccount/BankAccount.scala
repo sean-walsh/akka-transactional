@@ -9,12 +9,10 @@ import akka.persistence.journal.Tagged
   */
 case object BankAccount {
 
-  // States of a bank account.
-  object BankAccountStates  {
-    val Uninitialized = "uninitialized"
-    val Active = "active"
-    val InTransaction = "inTransaction"
-  }
+  sealed trait State
+  case object Uninitialized extends State
+  case object Active extends State
+  case object InTransaction extends State
 
   val EntityName = "bank-account"
 
@@ -26,7 +24,7 @@ case object BankAccount {
     * @param pendingBalance the balance that reflects any pending transaction.
     */
   case class BankAccountState(
-    currentState: String =  BankAccountStates.Uninitialized,
+    currentState: State =  Uninitialized,
     balance: BigDecimal = 0,
     pendingBalance: BigDecimal = 0)
 
@@ -34,7 +32,7 @@ case object BankAccount {
     * Factory method for BankAccount actor.
     * @return Props
     */
-  def props(): Props = Props(classOf[BankAccount])
+  def props(): Props = Props(new BankAccount)
 }
 
 /**
@@ -43,12 +41,11 @@ case object BankAccount {
 class BankAccount extends PersistentActor with ActorLogging with Stash {
 
   import BankAccount._
-  import BankAccountStates._
   import BankAccountCommands._
   import BankAccountEvents._
   import com.example.PersistentSagaActor._
 
-  override def persistenceId: String = self.path.name
+  override def persistenceId: String = "BankAccount|" + self.path.name
 
   private var state: BankAccountState = BankAccountState()
 
@@ -139,6 +136,10 @@ class BankAccount extends PersistentActor with ActorLogging with Stash {
   }
 
   override def receiveRecover: Receive = {
+
+    // FIXME extract the event handlers into something like `def applyEvent(event: BankAccountEvent): Unit`
+    // which is used both from receiveRecover and from the persist callbacks
+
     case _: BankAccountCreated =>
       transitionToActive()
 

@@ -5,6 +5,7 @@ import akka.actor.Actor
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.{EventEnvelope, Offset, PersistenceQuery}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
+import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
 import com.example.PersistentSagaActor.TransactionalEventEnvelope
@@ -26,27 +27,22 @@ trait TaggedEventSubscription { this: Actor =>
   def eventTag: String
 
   protected def subscribeToEvents(): Unit = {
-    if (context.system.settings.config.getString("akka.persistence.journal.plugin").contains("cassandra"))
-      subscribeToCassandraEvents()
-    else
-      subscribeToLevelDbEvents()
-  }
-
-  private def subscribeToLevelDbEvents(): Unit = {
     implicit val materializer = ActorMaterializer()
-    val readJournal = PersistenceQuery(context.system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
-    val source: Source[EventEnvelope, NotUsed] = readJournal.eventsByTag(eventTag, Offset.noOffset)
+    val query = readJournal()
+    val source: Source[EventEnvelope, NotUsed] = query.eventsByTag(eventTag, Offset.noOffset)
+    // FIXME to preserve backpressure this should use `source.map(_.event).ask` and the actor should reply when done, e.g. with akka.Done
     source.map(_.event).runForeach {
       case envelope: TransactionalEventEnvelope => self ! EventConfirmed(envelope)
     }
   }
 
-  private def subscribeToCassandraEvents(): Unit = {
-    implicit val materializer = ActorMaterializer()
-    val readJournal = PersistenceQuery(context.system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
-    val source: Source[EventEnvelope, NotUsed] = readJournal.eventsByTag(eventTag, Offset.noOffset)
-    source.map(_.event).runForeach {
-      case envelope: TransactionalEventEnvelope => self ! EventConfirmed(envelope)
-    }
+  private def readJournal(): EventsByTagQuery = {
+    val journalIdentifier =
+      if (context.system.settings.config.getString("akka.persistence.journal.plugin").contains("cassandra"))
+        CassandraReadJournal.Identifier
+      else
+        LeveldbReadJournal.Identifier
+    PersistenceQuery(context.system).readJournalFor[EventsByTagQuery](journalIdentifier)
   }
+
 }

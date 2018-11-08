@@ -83,12 +83,14 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
       post {
         entity(as[StartBankAccountTransaction]) { dto =>
           val start = StartSaga(transactionIdGenerator.generateId, dtoToDomain((dto)))
+          // FIXME ask and reply from entity with confirmation message after persist, complete the http request from the Future ?
           bankAccountSagaRegion ! start
           complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
         }
       } ~
       post {
         entity(as[CreateBankAccount]) { cmd =>
+          // FIXME ask?
           bankAccountRegion ! cmd
           complete(StatusCodes.Accepted, s"CreateBankAccount accepted with number: ${cmd.accountNumber}")
         }

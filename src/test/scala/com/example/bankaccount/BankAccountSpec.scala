@@ -59,7 +59,6 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
   "a BankAccount" should {
 
     import BankAccount._
-    import BankAccountStates._
     import PersistentSagaActor._
 
     val CustomerNumber = "customerNumber"
@@ -144,7 +143,7 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       val cmd = CommitTransaction(TransactionId, AccountNumber)
       bankAccount ! cmd
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState("active", 5, 0))
+      expectMsg(BankAccountState(Active, 5, 0))
 
       val src: Source[EventEnvelope, NotUsed] =
         readJournal.eventsByPersistenceId(AccountNumber, 5L, Long.MaxValue)
@@ -171,7 +170,7 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       evt2 shouldBe(TransactionReversed(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
 
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState("active", 5, 0))
+      expectMsg(BankAccountState(Active, 5, 0))
     }
 
     "accept pending WithdrawFunds command and then a rollback" in {

@@ -6,8 +6,8 @@ import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerS
 import akka.util.Timeout
 import com.example.PersistentSagaActor.StartSaga
 
-import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.math.abs
 
 /**
   * Test friendly abstract application.
@@ -23,10 +23,11 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.shard-count")
   val bankAccountShardIdExtractor: ShardRegion.ExtractShardId = {
-    case cmd: BankAccountCommand => (cmd.accountNumber.hashCode % bankAccountShardCount).toString
+    case cmd: BankAccountCommand =>
+      abs(cmd.accountNumber.hashCode % bankAccountShardCount).toString
     case ShardRegion.StartEntity(id) ⇒
       // StartEntity is used by remembering entities feature
-      (id.hashCode % bankAccountShardCount).toString
+      abs(id.hashCode % bankAccountShardCount).toString
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
@@ -42,9 +43,10 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val sagaShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.saga.shard-count")
   val sagaShardIdExtractor: ShardRegion.ExtractShardId = {
-    case cmd: StartSaga => (cmd.transactionId.hashCode % sagaShardCount).toString
+    case cmd: StartSaga =>
+      abs(cmd.transactionId.hashCode % sagaShardCount).toString
     case ShardRegion.StartEntity(id) ⇒
-      (id.hashCode % sagaShardCount).toString
+      abs(id.hashCode % sagaShardCount).toString
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account-saga",
@@ -67,7 +69,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     */
   protected def run(): Unit = {
     createHttpServer()
-    Await.ready(system.whenTerminated, Duration.Inf)
   }
 
   /**

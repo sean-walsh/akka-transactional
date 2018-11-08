@@ -74,7 +74,7 @@ object PersistentSagaActor {
     * @return Props
     */
   def props(persistentEntityRegion: ActorRef): Props =
-    Props(classOf[PersistentSagaActor], persistentEntityRegion: ActorRef)
+    Props(new PersistentSagaActor(persistentEntityRegion: ActorRef))
 }
 
 /**
@@ -85,13 +85,20 @@ object PersistentSagaActor {
 class PersistentSagaActor(persistentEntityRegion: ActorRef)
   extends PersistentActor with TaggedEventSubscription with ActorLogging {
 
+  // FIXME since this is running with ClusterSharding it may be stopped at any time and I don't you have anything
+  // that keeps it alive? It may stop due to rebalance (adding new nodes to the cluster) or node crashes. It will
+  // be activated again on next incoming message but if you don't send any such via ClusterSharding.region then
+  // it will remain stopped. Meaning that transactions in progress may not be completed (retried).
+  //
+  // You can use the "remember entities" feature for keeping it alive: https://doc.akka.io/docs/akka/current/cluster-sharding.html#remembering-entities
+
   import PersistentSagaActor._
   import SagaStates._
   import TaggedEventSubscription._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
 
-  override def persistenceId: String = self.path.name
+  override def persistenceId: String = "PersistentSagaActor|" + self.path.name
   val transactionId = persistenceId
   override val eventTag = transactionId
 
@@ -99,15 +106,13 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * How long to stick around for reporting purposes after completion.
     */
   private val keepAliveAfterCompletion: FiniteDuration =
-    Duration.fromNanos(context.system.settings.config
-      .getDuration("akka-saga.bank-account.saga.keep-alive-after-completion").toNanos())
+    context.system.settings.config.getDuration("akka-saga.bank-account.saga.keep-alive-after-completion").toNanos.nanos
 
   /**
     * How often to retry transactions on an entity when no confirmation received.
     */
   private val retryAfter: FiniteDuration =
-    Duration.fromNanos(context.system.settings.config
-      .getDuration("akka-saga.bank-account.saga.retry-after").toNanos())
+    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
 
   private case object Retry
 
@@ -128,8 +133,13 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     case StartSaga(transactionId, commands) =>
       log.info(s"starting new saga with transactionId: $transactionId")
       state = state.copy(currentState = Pending, commands = commands)
+      // FIXME the usage of snapshots in this PersistentActor doesn't look good
+      // - snapshots should only be used as an optimization to avoid replaying too many events
+      // - snapshot for each state change is not efficient, PersistentActor and journals are optimized for event sourcing
+      // - it's not safe, since it's not guaranteed to load the latest snapshot in next recovery
       saveSnapshot(state)
       context.become(pending.orElse(stateReporting))
+      // FIXME use Timers API instead https://doc.akka.io/docs/akka/current/actors.html#timers-scheduled-messages
       context.system.scheduler.scheduleOnce(retryAfter, self, Retry)
       subscribeToEvents()
 
