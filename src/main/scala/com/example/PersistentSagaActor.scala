@@ -141,6 +141,11 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
       context.become(pending.orElse(stateReporting))
       // FIXME use Timers API instead https://doc.akka.io/docs/akka/current/actors.html#timers-scheduled-messages
       context.system.scheduler.scheduleOnce(retryAfter, self, Retry)
+
+      // FIXME I don't think this will scale. Starting one such eventsByTag query for each saga.
+      // Perhaps we should move most of the saga logic into an event processor instead?
+      // We can have a few (fixed number) of those and they process all transactions (creating child actor for
+      // each transactionId). See https://github.com/akka/akka-samples/pull/82
       subscribeToEvents()
 
       commands.foreach { cmd =>
