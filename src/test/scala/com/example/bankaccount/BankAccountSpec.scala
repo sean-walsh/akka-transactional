@@ -40,6 +40,7 @@ object BankAccountSpec {
 
   val Config =
     """
+      |akka.actor.provider = "local"
       |akka.actor.warn-about-java-serializer-usage = "false"
     """.stripMargin + Journal
 }
@@ -54,17 +55,21 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
     TestKit.shutdownActorSystem(system)
   }
 
-  implicit val timeout = Timeout(20.seconds)
+  implicit val timeout =
+    if (BankAccountSpec.Cassandra)
+      Timeout(20.seconds)
+    else
+      Timeout(5.seconds)
 
   "a BankAccount" should {
 
     import BankAccount._
-    import BankAccountStates._
     import PersistentSagaActor._
 
     val CustomerNumber = "customerNumber"
     val AccountNumber = "accountNumber1"
-    val bankAccount = system.actorOf(Props(classOf[BankAccount]), AccountNumber)
+    val persistenceId = BankAccount.EntityPrefix + AccountNumber
+    val bankAccount = system.actorOf(Props(classOf[BankAccount]), persistenceId)
 
     implicit val mat = ActorMaterializer()(system)
 
@@ -75,13 +80,12 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
 
     "properly be created with CreateBankAccount command" in {
-      val cmd = CreateBankAccount(CustomerNumber, AccountNumber)
-      bankAccount ! cmd
+      bankAccount ! CreateBankAccount(CustomerNumber, AccountNumber)
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(Active, 0, 0))
+      expectMsg(BankAccountState(persistenceId, Active, 0, 0))
 
       val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 1L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 0L, Long.MaxValue)
       val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
       evt shouldBe(BankAccountCreated(CustomerNumber, AccountNumber))
     }
@@ -92,10 +96,10 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       val cmd = StartTransaction(TransactionId, DepositFunds(AccountNumber, Amount))
       bankAccount ! cmd
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(InTransaction, 0, 10))
+      expectMsg(BankAccountState(persistenceId, InTransaction, 0, 10))
 
       val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 2L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 2L, Long.MaxValue)
       val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
       evt shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
     }
@@ -108,10 +112,10 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       val cmd = StartTransaction(TransactionId, WithdrawFunds(AccountNumber, Amount))
       bankAccount ! cmd
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(InTransaction, 0, 10))
+      expectMsg(BankAccountState(persistenceId, InTransaction, 0, 10))
 
       val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 2L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 2L, Long.MaxValue)
       val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
       evt shouldBe(TransactionStarted(PreviousTransactionId, AccountNumber, FundsDeposited(AccountNumber, PreviousAmount)))
     }
@@ -125,15 +129,15 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       val cmd = CommitTransaction(PreviousTransactionId, AccountNumber)
       bankAccount ! cmd
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(InTransaction, 10, 5))
+      expectMsg(BankAccountState(persistenceId, InTransaction, 10, 5))
 
       val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 3L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 3L, Long.MaxValue)
       val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
       evt1 shouldBe(TransactionCleared(PreviousTransactionId, AccountNumber, FundsDeposited(AccountNumber, PreviousAmount)))
 
       val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 4L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 4L, Long.MaxValue)
       val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
       evt2 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
     }
@@ -144,10 +148,10 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       val cmd = CommitTransaction(TransactionId, AccountNumber)
       bankAccount ! cmd
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState("active", 5, 0))
+      expectMsg(BankAccountState(persistenceId, Active, 5, 0))
 
       val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 5L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 5L, Long.MaxValue)
       val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
       evt shouldBe(TransactionCleared(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
     }
@@ -159,19 +163,19 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       bankAccount ! cmd1
 
       val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 6L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 6L, Long.MaxValue)
       val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
       evt1 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
 
       val cmd2 = RollbackTransaction(TransactionId, AccountNumber)
       bankAccount ! cmd2
       val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 7L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 7L, Long.MaxValue)
       val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
       evt2 shouldBe(TransactionReversed(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
 
       bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState("active", 5, 0))
+      expectMsg(BankAccountState(persistenceId, Active, 5, 0))
     }
 
     "accept pending WithdrawFunds command and then a rollback" in {
@@ -181,14 +185,14 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       bankAccount ! cmd1
 
       val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 8L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 8L, Long.MaxValue)
       val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
       evt1 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
 
       val cmd2 = RollbackTransaction(TransactionId, AccountNumber)
       bankAccount ! cmd2
       val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(AccountNumber, 9L, Long.MaxValue)
+        readJournal.eventsByPersistenceId(persistenceId, 9L, Long.MaxValue)
       val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
       evt2 shouldBe(TransactionReversed(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
     }
@@ -199,10 +203,10 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       bankAccount ! PoisonPill
       probe.expectMsgClass(classOf[Terminated])
 
-      val bankAccount2 = system.actorOf(Props(classOf[BankAccount]), AccountNumber)
+      val bankAccount2 = system.actorOf(Props(classOf[BankAccount]), persistenceId)
 
       def wait: Boolean = Await.result((bankAccount2 ? GetBankAccountState).mapTo[BankAccountState],
-        timeout.duration) == BankAccountState(Active, 5, 0)
+        timeout.duration) == BankAccountState(persistenceId, Active, 5, 0)
       awaitCond(wait, timeout.duration, 100.milliseconds)
     }
   }

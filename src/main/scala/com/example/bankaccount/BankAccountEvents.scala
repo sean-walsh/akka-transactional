@@ -1,6 +1,6 @@
 package com.example.bankaccount
 
-import com.example.PersistentSagaActor.TransactionalEvent
+import com.example.PersistentSagaActor.{TransactionalEvent, TransactionalExceptionEvent}
 
 object BankAccountEvents {
 
@@ -13,7 +13,7 @@ object BankAccountEvents {
   case class InsufficientFunds(accountNumber: AccountNumber, balance: BigDecimal, attemptedWithdrawal: BigDecimal)
     extends BankAccountTransactionalExceptionEvent
 
-  trait BankAccountEvent {
+  sealed trait BankAccountEvent {
     def accountNumber: AccountNumber
   }
 
@@ -21,5 +21,5 @@ object BankAccountEvents {
     def amount: BigDecimal
   }
 
-  trait BankAccountTransactionalExceptionEvent extends BankAccountEvent with TransactionalEvent
+  trait BankAccountTransactionalExceptionEvent extends TransactionalExceptionEvent with BankAccountEvent
 }
