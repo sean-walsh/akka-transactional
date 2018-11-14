@@ -14,7 +14,6 @@ import scala.concurrent.ExecutionContext
 class AkkaSagaHttpServer(
   override val bankAccountRegion: ActorRef,
   override val bankAccountSagaRegion: ActorRef,
-  override val bankAccountsQuery: ActorRef
 )(override implicit val system: ActorSystem, override val timeout: Timeout) extends BankAccountRoutes {
 
   implicit val dispatcher: ExecutionContext = system.dispatcher

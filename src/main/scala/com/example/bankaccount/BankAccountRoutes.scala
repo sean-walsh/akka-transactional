@@ -3,7 +3,6 @@ package com.example.bankaccount
 import java.util.UUID
 
 import akka.actor.{ActorRef, ActorSystem}
-import akka.pattern.ask
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport
 import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.server.Directives.{as, complete, entity, path, post}
@@ -35,13 +34,9 @@ case class WithdrawFundsDto(accountNumber: AccountNumber, amount: BigDecimal)
   */
 trait BankAccountJsonSupport extends SprayJsonSupport with DefaultJsonProtocol {
 
-  import BankAccountsQuery._
-
   implicit val createBankAccountFormat = jsonFormat2(CreateBankAccount)
   implicit val depositFundsFormat = jsonFormat2(DepositFundsDto)
   implicit val withdrawFundsFormat = jsonFormat2(WithdrawFundsDto)
-  implicit val bankAccountProjectionFormat = jsonFormat2(BankAccountProjection)
-  implicit val bankAccountsProjectionsFormat = jsonFormat1(BankAccountProjections)
 
   implicit val startBankAccountTransactionFormat = jsonFormat2(StartBankAccountTransaction)
 }
@@ -66,13 +61,11 @@ class TransactionIdGeneratorImpl extends TransactionIdGenerator {
   */
 trait BankAccountRoutes extends BankAccountJsonSupport {
 
-  import BankAccountsQuery._
-  import com.example.PersistentSagaActor._
+  import com.example.PersistentSagaActorCommands._
 
   def bankAccountSagaRegion: ActorRef
   def bankAccountRegion: ActorRef
   def transactionIdGenerator: TransactionIdGenerator = new TransactionIdGeneratorImpl
-  def bankAccountsQuery: ActorRef
 
   implicit val system: ActorSystem
   implicit def timeout: Timeout
@@ -82,23 +75,16 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
     path("bank-accounts") {
       post {
         entity(as[StartBankAccountTransaction]) { dto =>
-          val start = StartSaga(transactionIdGenerator.generateId, dtoToDomain((dto)))
-          // FIXME ask and reply from entity with confirmation message after persist, complete the http request from the Future ?
+          val start = StartSaga(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
           bankAccountSagaRegion ! start
           complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
         }
       } ~
       post {
         entity(as[CreateBankAccount]) { cmd =>
-          // FIXME ask?
           bankAccountRegion ! cmd
           complete(StatusCodes.Accepted, s"CreateBankAccount accepted with number: ${cmd.accountNumber}")
         }
-      } ~
-      get {
-        complete(
-          (bankAccountsQuery ? GetBankAccountProjections).mapTo[BankAccountProjections]
-        )
       }
     }
 
@@ -106,10 +92,8 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
     * Convert dto commands to list of domain commands.
     */
   private def dtoToDomain(dto: StartBankAccountTransaction): Seq[BankAccountTransactionalCommand] =
-    (dto.deposits ++ dto.withdrawals).map ( c =>
-      c match {
-        case d: DepositFundsDto => DepositFunds(d.accountNumber, d.amount)
-        case w: WithdrawFundsDto => WithdrawFunds(w.accountNumber, w.amount)
-      }
-  )
+    (dto.deposits ++ dto.withdrawals).map {
+      case d: DepositFundsDto => DepositFunds(d.accountNumber, d.amount)
+      case w: WithdrawFundsDto => WithdrawFunds(w.accountNumber, w.amount)
+    }
 }
