@@ -77,12 +77,16 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
         entity(as[StartBankAccountTransaction]) { dto =>
           val start = StartSaga(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
           bankAccountSagaRegion ! start
+
+          // No need to have the client wait for a response, failures will be propagated on a separate path.
           complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
         }
       } ~
       post {
         entity(as[CreateBankAccount]) { cmd =>
           bankAccountRegion ! cmd
+
+          // No need to have the client wait for a response, failures will be propagated on a separate path.
           complete(StatusCodes.Accepted, s"CreateBankAccount accepted with number: ${cmd.accountNumber}")
         }
       }

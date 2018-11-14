@@ -5,6 +5,14 @@ import com.example._
 
 object BankAccountCommands {
 
+  sealed trait BankAccountCommand {
+    def accountNumber: String
+  }
+
+  trait BankAccountTransactionalCommand extends BankAccountCommand with TransactionalCommand {
+    def amount: BigDecimal
+  }
+
   case class CreateBankAccount(customerId: String, accountNumber: AccountNumber) extends BankAccountCommand
 
   case class DepositFunds(accountNumber: AccountNumber, amount: BigDecimal)
@@ -20,12 +28,4 @@ object BankAccountCommands {
   case class GetBankAccount(accountNumber: AccountNumber) extends BankAccountCommand
 
   case class GetBankAccountState(accountNumber: AccountNumber) extends BankAccountCommand
-
-  trait BankAccountCommand {
-    def accountNumber: String
-  }
-
-  trait BankAccountTransactionalCommand extends BankAccountCommand with TransactionalCommand {
-    def amount: BigDecimal
-  }
 }
