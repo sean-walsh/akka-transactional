@@ -140,7 +140,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "pending".
     */
   private def pending: Receive = {
-    case EventConfirmed(key, envelope) if envelope.transactionId == transactionId && key == self.path.name =>
+    case EventConfirmed(key, envelope) if key == self.path.name =>
       envelope match {
         case started: TransactionStarted =>
           envelope.event match {
@@ -175,7 +175,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "committing".
     */
   private def committing: Receive = {
-    case EventConfirmed(key, envelope) if envelope.transactionId == transactionId && key == self.path.name =>
+    case EventConfirmed(key, envelope) if key == self.path.name =>
       envelope match {
           case _: TransactionCleared =>
             if (!state.commitConfirmed.contains(envelope.entityId)) {
@@ -200,7 +200,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case EventConfirmed(key, envelope) if envelope.transactionId == transactionId && key == self.path.name =>
+    case EventConfirmed(key, envelope) if key == self.path.name =>
       envelope match {
           case _: TransactionReversed =>
             if (!state.rollbackConfirmed.contains(envelope.entityId)) {
