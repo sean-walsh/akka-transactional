@@ -45,7 +45,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
       singletonProps = EventSubscriptionNodeSingleton.props,
       terminationMessage = EventSubscriptionNodeSingleton.StopEventSubscriptionNodeSingleton,
       settings = ClusterSingletonManagerSettings(system)),
-    name = eventSubscriberUniqueName) // This must map to unique roll name in config. (use Lightbend Orchestration magic)
+    name = eventSubscriberUniqueName) // This must map to unique role name in config. (use Lightbend Orchestration magic)
 
   // Proxy for above.
   val eventSubscriberProxy = system.actorOf(
