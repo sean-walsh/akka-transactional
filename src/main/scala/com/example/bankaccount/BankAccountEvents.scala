@@ -2,6 +2,9 @@ package com.example.bankaccount
 
 import com.example.PersistentSagaActor.{TransactionalEvent, TransactionalExceptionEvent}
 
+/**
+  * Events issued by a bank account.
+  */
 object BankAccountEvents {
 
   case class BankAccountCreated(customerId: String, accountNumber: AccountNumber) extends BankAccountEvent

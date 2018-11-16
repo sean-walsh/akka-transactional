@@ -7,7 +7,7 @@ import akka.persistence.journal.Tagged
 /**
   * Bank account companion object.
   */
-case object BankAccount {
+case object BankAccountActor {
 
   sealed trait State
   case object Uninitialized extends State
@@ -34,15 +34,17 @@ case object BankAccount {
     * Factory method for BankAccount actor.
     * @return Props
     */
-  def props(): Props = Props(new BankAccount)
+  def props(): Props = Props(new BankAccountActor)
 }
 
 /**
   * I am a bank account modeled as persistent actor.
+  * This entity participates in a transactional saga. If desired, it can be enhanced to function outside of a saga
+  * as well, in fact I'll do that when I get around to it.
   */
-class BankAccount extends PersistentActor with ActorLogging with Stash {
+class BankAccountActor extends PersistentActor with ActorLogging with Stash {
 
-  import BankAccount._
+  import BankAccountActor._
   import BankAccountCommands._
   import BankAccountEvents._
   import com.example.PersistentSagaActor._

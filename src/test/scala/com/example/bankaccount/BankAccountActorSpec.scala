@@ -17,7 +17,7 @@ import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-object BankAccountSpec {
+object BankAccountActorSpec {
 
   val Cassandra = false
 
@@ -45,7 +45,7 @@ object BankAccountSpec {
     """.stripMargin + Journal
 }
 
-class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFactory.parseString(BankAccountSpec.Config)))
+class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFactory.parseString(BankAccountActorSpec.Config)))
   with WordSpecLike with Matchers with ImplicitSender with BeforeAndAfterAll {
 
   import BankAccountCommands._
@@ -56,25 +56,25 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
   }
 
   implicit val timeout =
-    if (BankAccountSpec.Cassandra)
+    if (BankAccountActorSpec.Cassandra)
       Timeout(20.seconds)
     else
       Timeout(5.seconds)
 
   "a BankAccount" should {
 
-    import BankAccount._
+    import BankAccountActor._
     import PersistentSagaActor._
 
     val CustomerNumber = "customerNumber"
     val AccountNumber = "accountNumber1"
-    val persistenceId = BankAccount.EntityPrefix + AccountNumber
-    val bankAccount = system.actorOf(Props(classOf[BankAccount]), persistenceId)
+    val persistenceId = BankAccountActor.EntityPrefix + AccountNumber
+    val bankAccount = system.actorOf(Props(classOf[BankAccountActor]), persistenceId)
 
     implicit val mat = ActorMaterializer()(system)
 
     val readJournal =
-      if (BankAccountSpec.Cassandra)
+      if (BankAccountActorSpec.Cassandra)
       PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
     else
       PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
@@ -203,7 +203,7 @@ class BankAccountSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFacto
       bankAccount ! PoisonPill
       probe.expectMsgClass(classOf[Terminated])
 
-      val bankAccount2 = system.actorOf(Props(classOf[BankAccount]), persistenceId)
+      val bankAccount2 = system.actorOf(Props(classOf[BankAccountActor]), persistenceId)
 
       def wait: Boolean = Await.result((bankAccount2 ? GetBankAccountState).mapTo[BankAccountState],
         timeout.duration) == BankAccountState(persistenceId, Active, 5, 0)

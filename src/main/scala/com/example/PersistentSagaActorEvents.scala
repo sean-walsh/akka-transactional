@@ -2,6 +2,9 @@ package com.example
 
 import com.example.PersistentSagaActor.{TransactionalCommand, TransactionalEventEnvelope}
 
+/**
+  * Wrapping "Envelope" events to be handled by entities participating in a saga.
+  */
 object PersistentSagaActorEvents {
 
   sealed trait PersistentSagaActorEvent

@@ -2,7 +2,6 @@ package com.example
 
 import akka.actor.{ActorLogging, ActorRef, Props, ReceiveTimeout, Timers}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
-import com.example.PersistentSagaActor.TransactionalExceptionEvent
 import com.example.bankaccount.BankAccountEvents.BankAccountTransactionalExceptionEvent
 
 import scala.concurrent.ExecutionContext
@@ -308,7 +307,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
 
   /**
     * Apply SagaStarted event.
-    * --DO NOT call this from recover.
     */
   private def applyEvent(event: SagaStarted): Unit = {
     state = SagaState(transactionId, event.description, Pending, event.commands)

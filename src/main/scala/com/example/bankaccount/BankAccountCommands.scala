@@ -3,6 +3,9 @@ package com.example.bankaccount
 import com.example.PersistentSagaActor.TransactionalCommand
 import com.example._
 
+/**
+  * Commands handled by a bank account.
+  */
 object BankAccountCommands {
 
   sealed trait BankAccountCommand {

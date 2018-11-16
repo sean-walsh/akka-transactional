@@ -3,7 +3,7 @@ package com.example
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import akka.util.Timeout
-import com.example.bankaccount.BankAccount
+import com.example.bankaccount.BankAccountActor
 
 import scala.concurrent.duration._
 import scala.math.abs
@@ -19,7 +19,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
-    case cmd: BankAccountCommand => (BankAccount.EntityPrefix + cmd.accountNumber, cmd)
+    case cmd: BankAccountCommand => (BankAccountActor.EntityPrefix + cmd.accountNumber, cmd)
   }
   val bankAccountShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.shard-count")
   val bankAccountShardIdExtractor: ShardRegion.ExtractShardId = {
@@ -30,7 +30,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
-    entityProps = bankaccount.BankAccount.props(),
+    entityProps = bankaccount.BankAccountActor.props(),
     settings = ClusterShardingSettings(system),
     extractEntityId = bankAccountEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor

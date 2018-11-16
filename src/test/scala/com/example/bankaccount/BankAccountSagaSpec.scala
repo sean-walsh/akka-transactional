@@ -74,25 +74,25 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     val eventSubscriber = system.actorOf(TaggedEventSubscriptionManager.props())
 
     // Instantiate the bank accounts (sharding would do this in clustered mode).
-    system.actorOf(BankAccount.props(), BankAccount.EntityPrefix + "accountNumber11")
-    system.actorOf(BankAccount.props(), BankAccount.EntityPrefix + "accountNumber22")
-    system.actorOf(BankAccount.props(), BankAccount.EntityPrefix + "accountNumber33")
+    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber11")
+    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber22")
+    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber33")
 
     // Cluster shard mock.
     val bankAccountRegion = system.actorOf(Props(new Actor() {
       override def receive: Receive = {
         case cmd @ CreateBankAccount(_, accountNumber) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case cmd @ StartTransaction(_, DepositFunds(accountNumber, _)) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case cmd @ StartTransaction(_, WithdrawFunds(accountNumber, _)) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case cmd @ CommitTransaction(_, accountNumber) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case cmd @ RollbackTransaction(_, accountNumber) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case cmd @ CompleteTransaction(_, accountNumber) =>
-          system.actorSelection(s"/user/${BankAccount.EntityPrefix}$accountNumber") ! cmd
+          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
       }
     }))
 
