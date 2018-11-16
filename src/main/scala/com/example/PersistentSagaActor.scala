@@ -96,7 +96,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
   import PersistentSagaActorCommands._
   import PersistentSagaActorEvents._
   import SagaStates._
-  import EventSubscriptionNodeSingleton._
+  import TaggedEventSubscriptionManager._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
 
@@ -145,7 +145,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
         case started: TransactionStarted =>
           envelope.event match {
             case _: BankAccountTransactionalExceptionEvent =>
-              if (!state.exceptions.contains(envelope.entityId)) {
+              if (!state.exceptions.exists(_.entityId == envelope.entityId)) {
                 persist(SagaExceptionConfirmed(transactionId, envelope)) { event =>
                   applyEvent(event)
                   applySideEffectsFromPending(started)

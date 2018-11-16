@@ -17,7 +17,7 @@ import scala.concurrent.duration._
 /**
   * Companion to EventSubscriptionNodeSingleton.
   */
-object EventSubscriptionNodeSingleton {
+object TaggedEventSubscriptionManager {
 
   case class SubscribeToTaggedEvent(key: String, eventTag: String, offset: Long)
 
@@ -29,16 +29,16 @@ object EventSubscriptionNodeSingleton {
 
   case object StopEventSubscriptionNodeSingleton
 
-  def props(): Props = Props(new EventSubscriptionNodeSingleton)
+  def props(): Props = Props(new TaggedEventSubscriptionManager)
 }
 
 /**
   * This actor will subscribe to only one event at a time and only subscribe to the next event (offset) after
   * the previous has been confirmed to have been received.
   */
-class TaggedEventSubscriber(key: String, eventTag: String, initialOffset: Long)(implicit timeout: Timeout) extends Actor {
+class TaggedEventKeyedSubscriber(key: String, eventTag: String, initialOffset: Long)(implicit timeout: Timeout) extends Actor {
 
-  import EventSubscriptionNodeSingleton._
+  import TaggedEventSubscriptionManager._
 
   private val query = readJournal()
   implicit val materializer: ActorMaterializer = ActorMaterializer()
@@ -78,17 +78,11 @@ class TaggedEventSubscriber(key: String, eventTag: String, initialOffset: Long)(
 
 /**
   * There should be one of these instantiated for every node.
-  * This is accomplished by instantiating a ClusterSingletonManager on this actor, giving it a unique name per
-  * node in the cluster.
-  * --The name of this instance should map to the akka.cluster.role configuration setting.
-  * --Each node in the cluster must have this configuration setting as unique.
-  * --If a child actor dies it will only be started upon renewed subscription so any client should have a retry
-  *   mechanism in place.
   * --By way of confirmation, the client must acknowledge receipt of an event by sending an updated offset.
   */
-class EventSubscriptionNodeSingleton extends Actor {
+class TaggedEventSubscriptionManager extends Actor {
 
-  import EventSubscriptionNodeSingleton._
+  import TaggedEventSubscriptionManager._
 
   // How often to retry transactions on an entity when no confirmation received.
   private val configuredTimeout: FiniteDuration =
@@ -130,7 +124,7 @@ class EventSubscriptionNodeSingleton extends Actor {
     * Creates a child representing an event tag subscription and adds it to subscriptions map.
     */
   private def createChild(key: String, eventTag: String, offset: Long): ActorRef = {
-    val child = context.actorOf(Props(new TaggedEventSubscriber(key, eventTag, offset)), fullKey(key, eventTag))
+    val child = context.actorOf(Props(new TaggedEventKeyedSubscriber(key, eventTag, offset)), fullKey(key, eventTag))
     context.watch(child)
     subscriptions = subscriptions + (fullKey(key, eventTag) -> child)
     child

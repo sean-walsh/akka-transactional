@@ -8,9 +8,8 @@ import com.typesafe.config.ConfigFactory
   */
 object AkkaSagaApp {
   def main(args: Array[String]): Unit = {
-    val config = ConfigFactory.load()
 
-    implicit val system: ActorSystem = ActorSystem("akka-saga-app", config)
+    implicit val system: ActorSystem = ActorSystem("akka-saga-app", ConfigFactory.load())
 
     val app: AkkaSagaApp = new AkkaSagaApp()
     app.run()

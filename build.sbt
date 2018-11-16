@@ -20,7 +20,6 @@ libraryDependencies ++= Seq(
   "com.typesafe.akka"         %% "akka-persistence-query"     % akkaVersion,
   "com.typesafe.akka"         %% "akka-cluster-tools"         % akkaVersion,
   "com.typesafe.akka"         %% "akka-persistence-cassandra" % "0.91",
-//  "com.codahale.metrics"       % "metrics-core"               % "3.0.2",
   "com.typesafe.akka"         %% "akka-testkit"               % akkaVersion     % "test",
   "com.typesafe.akka"         %% "akka-http-testkit"          % httpVersion     % "test",
   "org.iq80.leveldb"           % "leveldb"                    % "0.10"          % "test",
@@ -28,29 +27,30 @@ libraryDependencies ++= Seq(
   "org.scalatest"             %% "scalatest"                  % "3.0.5"         % "test"
 )
 
-//enablePlugins(SbtReactiveAppPlugin)//, Cinnamon)
-//
-//// Set up metrics
-//libraryDependencies ++= Vector(
-//  Cinnamon.library.cinnamonCHMetrics,
-//  Cinnamon.library.cinnamonAkka,
-//  Cinnamon.library.cinnamonAkkaHttp,
-//  Cinnamon.library.cinnamonJvmMetricsProducer,
-//  Cinnamon.library.cinnamonPrometheus,
-//  Cinnamon.library.cinnamonPrometheusHttpServer
-//)
-//endpoints += TcpEndpoint("cinnamon", 9091, None)
-//
-//mainClass in Compile := Some("com.example.AkkaSagaApp")
-//
-//// Reactive CLI integration for Kubernetes
-//enableAkkaClusterBootstrap := true
-//endpoints += HttpEndpoint("http", 8080, HttpIngress(Seq(80), Seq("akka-saga.io"), Seq("/")))
-//
-//annotations := Map(
-//  // enable scraping
-//  "prometheus.io/scrape" -> "true",
-//  "prometheus.io/port" -> "9091"
-//)
+lazy val app = project in file(".") enablePlugins (SbtReactiveAppPlugin, Cinnamon)
+mainClass in Compile := Some("com.example.AkkaSagaApp")
+
+endpoints += TcpEndpoint("cinnamon", 9091, None)
+
+// Reactive CLI integration for Kubernetes
+enableAkkaClusterBootstrap := true
+endpoints += HttpEndpoint("http", 8080, HttpIngress(Seq(80), Seq("akka-saga.io"), Seq("/")))
+
+annotations := Map(
+  "prometheus.io/scrape" -> "true",
+  "prometheus.io/port" -> "9091"
+)
+
+libraryDependencies += Cinnamon.library.cinnamonCHMetrics
+libraryDependencies += Cinnamon.library.cinnamonAkka
+libraryDependencies += Cinnamon.library.cinnamonAkkaStream
+libraryDependencies += Cinnamon.library.cinnamonAkkaHttp
+libraryDependencies += Cinnamon.library.cinnamonPrometheus
+libraryDependencies += Cinnamon.library.cinnamonPrometheusHttpServer
+libraryDependencies += Cinnamon.library.cinnamonJvmMetricsProducer
+
+cinnamonLogLevel := "INFO"
+cinnamon in run := true
+cinnamon in test := false
 
 fork := true

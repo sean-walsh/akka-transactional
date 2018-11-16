@@ -10,7 +10,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.{EventSubscriptionNodeSingleton, PersistentSagaActor}
+import com.example.{TaggedEventSubscriptionManager, PersistentSagaActor}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -71,7 +71,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
 
     var TransactionId: String = "need to set this!"
 
-    val eventSubscriber = system.actorOf(EventSubscriptionNodeSingleton.props())
+    val eventSubscriber = system.actorOf(TaggedEventSubscriptionManager.props())
 
     // Instantiate the bank accounts (sharding would do this in clustered mode).
     system.actorOf(BankAccount.props(), BankAccount.EntityPrefix + "accountNumber11")
@@ -130,9 +130,10 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     // --
 
     "commit transaction when no exceptions" in {
+
       TransactionId = "transactionId11"
 
-      val source: Source[EventEnvelope, NotUsed] = readJournal.eventsByTag(TransactionId, Offset.noOffset)
+      val source = readJournal.eventsByTag(TransactionId, Offset.noOffset)
       source.map(_.event).runForeach {
         case envelope: TransactionalEventEnvelope => eventReceiver ! BankAccountTransactionConfirmed(envelope, envelope.entityId)
       }
@@ -146,13 +147,13 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       )
 
       saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
-      val sagaProbe: TestProbe = TestProbe()
+      val sagaProbe = TestProbe()
 
       sagaProbe.awaitCond(Await.result((saga ? GetSagaState)
         .mapTo[SagaState], timeout.duration).currentState == Complete,
         timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
 
-      val probe: TestProbe = TestProbe()
+      val probe = TestProbe()
       val ExpectedEvents = Seq(
         TransactionStarted(TransactionId, "accountNumber11", FundsDeposited("accountNumber11", 10)),
         TransactionCleared(TransactionId, "accountNumber11", FundsDeposited("accountNumber11", 10)),
@@ -180,7 +181,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       }
     }
 
-    "rollback transaction when with exception" in {
+    "rollback transaction when with exception and ignore redundant event confirmation" in {
       TransactionId = "transactionId22"
       eventReceiver ! Reset
 

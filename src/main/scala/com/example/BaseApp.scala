@@ -2,7 +2,6 @@ package com.example
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
-import akka.cluster.singleton.{ClusterSingletonManager, ClusterSingletonManagerSettings, ClusterSingletonProxy, ClusterSingletonProxySettings}
 import akka.util.Timeout
 import com.example.bankaccount.BankAccount
 
@@ -26,8 +25,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   val bankAccountShardIdExtractor: ShardRegion.ExtractShardId = {
     case cmd: BankAccountCommand =>
       abs(cmd.accountNumber.hashCode % bankAccountShardCount).toString
-    case ShardRegion.StartEntity(id) ⇒
-      // StartEntity is used by remembering entities feature
+    case ShardRegion.StartEntity(id) =>
       abs(id.hashCode % bankAccountShardCount).toString
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
@@ -38,21 +36,9 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     extractShardId = bankAccountShardIdExtractor
   )
 
-  // Per node event subscriber.
-  val eventSubscriberUniqueName = system.settings.config.getString("akka-saga.event-subscriber.unique-name")
-  system.actorOf(
-    ClusterSingletonManager.props(
-      singletonProps = EventSubscriptionNodeSingleton.props,
-      terminationMessage = EventSubscriptionNodeSingleton.StopEventSubscriptionNodeSingleton,
-      settings = ClusterSingletonManagerSettings(system)),
-    name = eventSubscriberUniqueName) // This must map to unique role name in config. (use Lightbend Orchestration magic)
-
-  // Proxy for above.
-  val eventSubscriberProxy = system.actorOf(
-    ClusterSingletonProxy.props(
-      singletonManagerPath = s"/user/$eventSubscriberUniqueName",
-      settings = ClusterSingletonProxySettings(system)),
-    name = s"${eventSubscriberUniqueName}Proxy")
+  // Per node event subscriber. --todo: implement supervisor to keep this thing started.
+  val taggedEventSubscriptionManager =
+    system.actorOf(TaggedEventSubscriptionManager.props(), classOf[TaggedEventSubscriptionManager].getName)
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -67,7 +53,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account-saga",
-    entityProps = PersistentSagaActor.props(bankAccountRegion, eventSubscriberProxy),
+    entityProps = PersistentSagaActor.props(bankAccountRegion, taggedEventSubscriptionManager),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor
