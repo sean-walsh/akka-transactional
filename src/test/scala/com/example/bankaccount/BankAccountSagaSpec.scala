@@ -10,7 +10,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.{TaggedEventSubscriptionManager, PersistentSagaActor}
+import com.example.{EventTag, PersistentSagaActor, TaggedEventSubscription, TransactionId}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -44,7 +44,6 @@ object BankAccountSagaSpec {
       |akka.actor.warn-about-java-serializer-usage = "false"
       |akka-saga.bank-account.saga.retry-after = 5 minutes
       |akka-saga.bank-account.saga.keep-alive-after-completion = 5 minutes
-      |akka-saga.event-subscriber.timeout-subscription-after = 5 minutes
     """.stripMargin + Journal
 }
 
@@ -69,14 +68,13 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
 
   "a BankAccountSaga" should {
 
-    var TransactionId: String = "need to set this!"
-
-    val eventSubscriber = system.actorOf(TaggedEventSubscriptionManager.props())
+    val eventTag: EventTag = "testEventTag"
+    system.actorOf(TaggedEventSubscription.props(eventTag))
 
     // Instantiate the bank accounts (sharding would do this in clustered mode).
-    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber11")
-    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber22")
-    system.actorOf(BankAccountActor.props(), BankAccountActor.EntityPrefix + "accountNumber33")
+    system.actorOf(BankAccountActor.props(eventTag), BankAccountActor.EntityPrefix + "accountNumber11")
+    system.actorOf(BankAccountActor.props(eventTag), BankAccountActor.EntityPrefix + "accountNumber22")
+    system.actorOf(BankAccountActor.props(eventTag), BankAccountActor.EntityPrefix + "accountNumber33")
 
     // Cluster shard mock.
     val bankAccountRegion = system.actorOf(Props(new Actor() {
@@ -101,7 +99,6 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     bankAccountRegion ! CreateBankAccount("customer1", "accountNumber22")
     bankAccountRegion ! CreateBankAccount("customer1", "accountNumber33")
 
-    implicit val mat = ActorMaterializer()(system)
     val readJournal =
       if (BankAccountSagaSpec.Cassandra)
         PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
@@ -113,11 +110,13 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     case object GetEvents
     case class GetEventsResult(confirms: Seq[TransactionalEventEnvelope])
     case object Reset
+    var currentTransaction = ""
     val eventReceiver: ActorRef = system.actorOf(Props(new Actor {
       private var confirms: Seq[BankAccountTransactionConfirmed] = Seq.empty
       override def receive: Receive = {
         case confirm: BankAccountTransactionConfirmed =>
-          confirms = confirms :+ confirm
+          if (confirm.envelope.transactionId == currentTransaction)
+            confirms = confirms :+ confirm
         case GetEvents =>
           sender() ! GetEventsResult(
             confirms.sortWith((a, b) =>
@@ -131,14 +130,16 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
 
     "commit transaction when no exceptions" in {
 
-      TransactionId = "transactionId11"
+      val TransactionId: TransactionId = "transactionId11"
+      currentTransaction = TransactionId
 
-      val source = readJournal.eventsByTag(TransactionId, Offset.noOffset)
+      implicit val mat = ActorMaterializer()(system)
+      val source = readJournal.eventsByTag(eventTag, Offset.noOffset)
       source.map(_.event).runForeach {
         case envelope: TransactionalEventEnvelope => eventReceiver ! BankAccountTransactionConfirmed(envelope, envelope.entityId)
       }
 
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion), TransactionId)
 
       val cmds = Seq(
         DepositFunds("accountNumber11", 10),
@@ -179,18 +180,22 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
           state.rollbackConfirmed should be(Nil)
           state.exceptions should be(Nil)
       }
+
+      mat.shutdown()
     }
 
-    "rollback transaction when with exception and ignore redundant event confirmation" in {
-      TransactionId = "transactionId22"
+    "rollback transaction when with exception and ignore redundant event confirmation from previous spec" in {
+      val TransactionId: TransactionId = "transactionId22"
+      currentTransaction = TransactionId
       eventReceiver ! Reset
 
-      val source: Source[EventEnvelope, NotUsed] = readJournal.eventsByTag(TransactionId, Offset.noOffset)
+      implicit val mat = ActorMaterializer()(system)
+      val source: Source[EventEnvelope, NotUsed] = readJournal.eventsByTag(eventTag, Offset.noOffset)
       source.map(_.event).runForeach {
         case envelope: TransactionalEventEnvelope => eventReceiver ! BankAccountTransactionConfirmed(envelope, envelope.entityId)
       }
 
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion), TransactionId)
 
       val cmds = Seq(
         WithdrawFunds("accountNumber11", 11), // Account having balance of only 10
@@ -233,13 +238,16 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
           state.rollbackConfirmed.sortWith(_ < _) should be(Seq("accountNumber22", "accountNumber33"))
           state.exceptions should be(Seq(TransactionStarted(TransactionId, "accountNumber11", InsufficientFunds("accountNumber11", 10, 11))))
       }
+
+      mat.shutdown()
     }
 
     "replay properly" in {
-      TransactionId = "transactionId33"
+      val TransactionId: TransactionId = "transactionId33"
+      currentTransaction = TransactionId
       eventReceiver ! Reset
 
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion), TransactionId)
 
       val cmds = Seq(
         DepositFunds("accountNumber11", 50),
@@ -258,7 +266,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       saga ! PoisonPill
       sagaProbe.expectMsgClass(classOf[Terminated])
 
-      val saga2 = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+      val saga2 = system.actorOf(PersistentSagaActor.props(bankAccountRegion), TransactionId)
 
       sagaProbe.awaitCond(Await.result((saga2 ? GetSagaState)
         .mapTo[SagaState], timeout.duration).currentState == Complete,

@@ -3,6 +3,7 @@ package com.example.bankaccount
 import akka.actor.{ActorLogging, Props, Stash}
 import akka.persistence.PersistentActor
 import akka.persistence.journal.Tagged
+import com.example.EventTag
 
 /**
   * Bank account companion object.
@@ -32,9 +33,10 @@ case object BankAccountActor {
 
   /**
     * Factory method for BankAccount actor.
+    * @param eventTag the node assigned value to be used to tag events.
     * @return Props
     */
-  def props(): Props = Props(new BankAccountActor)
+  def props(eventTag: EventTag): Props = Props(new BankAccountActor(eventTag))
 }
 
 /**
@@ -42,7 +44,7 @@ case object BankAccountActor {
   * This entity participates in a transactional saga. If desired, it can be enhanced to function outside of a saga
   * as well, in fact I'll do that when I get around to it.
   */
-class BankAccountActor extends PersistentActor with ActorLogging with Stash {
+class BankAccountActor(eventTag: EventTag) extends PersistentActor with ActorLogging with Stash {
 
   import BankAccountActor._
   import BankAccountCommands._
@@ -76,18 +78,18 @@ class BankAccountActor extends PersistentActor with ActorLogging with Stash {
       cmd match {
         case DepositFunds(accountNumber, amount) =>
           persist(Tagged(TransactionStarted(transactionId, accountNumber, FundsDeposited(accountNumber, amount)),
-            Set(transactionId))) { tagged =>
+            Set(eventTag))) { tagged =>
               applyEvent(tagged.payload.asInstanceOf[TransactionStarted])
           }
         case WithdrawFunds(accountNumber, amount) =>
           if (state.balance - amount >= 0)
             persist(Tagged(TransactionStarted(transactionId, accountNumber, FundsWithdrawn(accountNumber, amount)),
-              Set(transactionId))) { tagged =>
+              Set(eventTag))) { tagged =>
                 applyEvent(tagged.payload.asInstanceOf[TransactionStarted])
             }
           else {
             persist(Tagged(TransactionStarted(transactionId, accountNumber,
-              InsufficientFunds(accountNumber, state.balance, amount)), Set(transactionId))) { tagged =>
+              InsufficientFunds(accountNumber, state.balance, amount)), Set(eventTag))) { tagged =>
                 applyEvent(tagged.payload.asInstanceOf[TransactionStarted])
               }
           }
@@ -95,21 +97,21 @@ class BankAccountActor extends PersistentActor with ActorLogging with Stash {
   }
 
   /**
-    * When in a transaction I can only handle commits and rollbacs.
+    * When in a transaction I can only handle commits and rollbacks.
     * @param processing TransactionalEvent the event that was the start of this transaction.
     */
   def inTransaction(processing: TransactionalEvent): Receive = {
     case CommitTransaction(transactionId, entityId) =>
-      persist(Tagged(TransactionCleared(transactionId, entityId, processing), Set(transactionId))) { tagged =>
+      persist(Tagged(TransactionCleared(transactionId, entityId, processing), Set(eventTag))) { tagged =>
         applyEvent(tagged.payload.asInstanceOf[TransactionCleared])
       }
 
     case RollbackTransaction(transactionId, entityId) =>
-      persist(Tagged(TransactionReversed(transactionId, entityId, processing), Set(transactionId))) { tagged =>
+      persist(Tagged(TransactionReversed(transactionId, entityId, processing), Set(eventTag))) { tagged =>
         applyEvent(tagged.payload.asInstanceOf[TransactionReversed])
       }
     case CompleteTransaction(transactionId, entityId) =>
-      persist(Tagged(TransactionComplete(transactionId, entityId, processing), Set(transactionId))) { tagged =>
+      persist(Tagged(TransactionComplete(transactionId, entityId, processing), Set(eventTag))) { tagged =>
         applyEvent(tagged.payload.asInstanceOf[TransactionComplete])
       }
   }

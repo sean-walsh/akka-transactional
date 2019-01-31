@@ -1,5 +1,7 @@
 package com.example
 
+import java.util.UUID
+
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import akka.util.Timeout
@@ -17,6 +19,9 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   import bankaccount.BankAccountCommands._
   import PersistentSagaActorCommands._
 
+  // Generate a unique eventTag to be used for tagging all event for entities instantiated on this node.
+  val eventTag: EventTag = UUID.randomUUID().toString
+
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
     case cmd: BankAccountCommand => (BankAccountActor.EntityPrefix + cmd.accountNumber, cmd)
@@ -30,15 +35,14 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
-    entityProps = bankaccount.BankAccountActor.props(),
+    entityProps = bankaccount.BankAccountActor.props(eventTag),
     settings = ClusterShardingSettings(system),
     extractEntityId = bankAccountEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor
   )
 
-  // Per node event subscriber. --todo: implement supervisor to keep this thing started.
-  val taggedEventSubscriptionManager =
-    system.actorOf(TaggedEventSubscriptionManager.props(), classOf[TaggedEventSubscriptionManager].getName)
+  // Per node event subscriber.
+  system.actorOf(TaggedEventSubscription.props(eventTag))
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -53,7 +57,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account-saga",
-    entityProps = PersistentSagaActor.props(bankAccountRegion, taggedEventSubscriptionManager),
+    entityProps = PersistentSagaActor.props(bankAccountRegion),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor

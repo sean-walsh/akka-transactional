@@ -1,7 +1,7 @@
 package com.example.bankaccount
 
 import akka.NotUsed
-import akka.actor.{ActorSystem, PoisonPill, Props, Terminated}
+import akka.actor.{ActorRef, ActorSystem, PoisonPill, Terminated}
 import akka.pattern.ask
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
@@ -10,7 +10,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.PersistentSagaActor
+import com.example.{EventTag, PersistentSagaActor}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -66,10 +66,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
     import BankAccountActor._
     import PersistentSagaActor._
 
-    val CustomerNumber = "customerNumber"
-    val AccountNumber = "accountNumber1"
-    val persistenceId = BankAccountActor.EntityPrefix + AccountNumber
-    val bankAccount = system.actorOf(Props(classOf[BankAccountActor]), persistenceId)
+    val CustomerNumber: String = "customerNumber"
+    val AccountNumber: AccountNumber = "accountNumber1"
+    val persistenceId: String = BankAccountActor.EntityPrefix + AccountNumber
+    val eventTag: EventTag = "someEventTag"
+    val bankAccount: ActorRef = system.actorOf(BankAccountActor.props(eventTag), persistenceId)
 
     implicit val mat = ActorMaterializer()(system)
 
@@ -203,7 +204,7 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       bankAccount ! PoisonPill
       probe.expectMsgClass(classOf[Terminated])
 
-      val bankAccount2 = system.actorOf(Props(classOf[BankAccountActor]), persistenceId)
+      val bankAccount2 = system.actorOf(BankAccountActor.props(eventTag), persistenceId)
 
       def wait: Boolean = Await.result((bankAccount2 ? GetBankAccountState).mapTo[BankAccountState],
         timeout.duration) == BankAccountState(persistenceId, Active, 5, 0)

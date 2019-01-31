@@ -14,9 +14,6 @@ object PersistentSagaActor {
 
   val EntityPrefix = "persistent-saga-actor-"
 
-  private case object TimerKey
-  private case object Retry
-
   // Envelope to wrap events.
   trait TransactionalEventEnvelope {
     def transactionId: TransactionId
@@ -76,8 +73,8 @@ object PersistentSagaActor {
   /**
     * Props factory method.
     */
-  def props(persistentEntityRegion: ActorRef, eventSubscriber: ActorRef): Props =
-    Props(new PersistentSagaActor(persistentEntityRegion, eventSubscriber))
+  def props(persistentEntityRegion: ActorRef): Props =
+    Props(new PersistentSagaActor(persistentEntityRegion))
 }
 
 /**
@@ -88,31 +85,26 @@ object PersistentSagaActor {
   *   Any resending of retried commands, commits or rollbacks should also be ignored by the entities, easily
   *   accomplished with 'become' state changes.
   */
-class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: ActorRef)
+class PersistentSagaActor(persistentEntityRegion: ActorRef)
   extends Timers with PersistentActor with ActorLogging {
 
   import PersistentSagaActor._
   import PersistentSagaActorCommands._
   import PersistentSagaActorEvents._
   import SagaStates._
-  import TaggedEventSubscriptionManager._
+  import TaggedEventSubscription._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
 
   override def persistenceId: String = EntityPrefix + self.path.name
 
-  val transactionId = self.path.name
+  private val transactionId = self.path.name
 
   // How long to stick around for reporting purposes after completion.
   private val keepAliveAfterCompletion: FiniteDuration =
     context.system.settings.config.getDuration("akka-saga.bank-account.saga.keep-alive-after-completion").toNanos.nanos
 
-  // How often to retry transactions on an entity when no confirmation received.
-  private val retryAfter: FiniteDuration =
-    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
-
   private var state: SagaState = null
-  private var eventOffset: Long = 0L
 
   final override def receiveCommand: Receive = uninitialized.orElse(stateReporting)
   context.setReceiveTimeout(10.seconds)
@@ -139,7 +131,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "pending".
     */
   private def pending: Receive = {
-    case EventConfirmed(key, envelope) if key == self.path.name =>
+    case EventConfirmed(_, transactionId, envelope) if transactionId == self.path.name =>
       envelope match {
         case started: TransactionStarted =>
           envelope.event match {
@@ -159,13 +151,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
               }
           }
       }
-
-    case Retry =>
-      state.commands.diff(state.pendingConfirmed).foreach( c =>
-        persistentEntityRegion ! c
-      )
-
-      context.system.eventStream.subscribe(self, classOf[EventConfirmed])
   }
 
   /**
@@ -174,7 +159,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "committing".
     */
   private def committing: Receive = {
-    case EventConfirmed(key, envelope) if key == self.path.name =>
+    case EventConfirmed(_, transactionId, envelope) if transactionId == self.path.name =>
       envelope match {
           case _: TransactionCleared =>
             if (!state.commitConfirmed.contains(envelope.entityId)) {
@@ -184,13 +169,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
               }
             }
         }
-
-    case Retry =>
-      state.commands.diff(state.pendingConfirmed).foreach( c =>
-        persistentEntityRegion ! c
-      )
-
-      context.system.eventStream.subscribe(self, classOf[EventConfirmed])
   }
 
   /**
@@ -199,7 +177,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case EventConfirmed(key, envelope) if key == self.path.name =>
+    case EventConfirmed(_, transactionId, envelope) if transactionId == self.path.name =>
       envelope match {
           case _: TransactionReversed =>
             if (!state.rollbackConfirmed.contains(envelope.entityId)) {
@@ -209,13 +187,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
               }
             }
         }
-
-    case Retry =>
-      state.commands.diff(state.pendingConfirmed).foreach( c =>
-        persistentEntityRegion ! c
-      )
-
-      context.system.eventStream.subscribe(self, classOf[EventConfirmed])
   }
 
   /**
@@ -236,9 +207,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     commands.foreach ( cmd =>
       persistentEntityRegion ! StartTransaction(state.transactionId, cmd)
     )
-
-    eventSubscriber ! SubscribeToTaggedEvent(self.path.name, transactionId, eventOffset)
-    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
   }
 
   /**
@@ -266,44 +234,28 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
       )
     }
     else if (state.currentState == Complete) {
-      timers.cancel(TimerKey)
-      eventSubscriber ! UnsubscribeFromTaggedEvent(self.path.toString, transactionId)
       context.become(stateReporting.orElse {
         case ReceiveTimeout =>
           context.stop(self)
       })
     }
-
-    eventSubscriber ! UpdateOffset(self.path.name, transactionId, eventOffset)
   }
 
   /**
     * Side effecting transition from committing state.
     * --DO NOT call this from recover.
     */
-  private def applySideEffectsFromCommitting(): Unit = {
-    if (state.currentState == Complete) {
+  private def applySideEffectsFromCommitting(): Unit =
+    if (state.currentState == Complete)
       log.info(s"Bank account saga completed successfully for transactionId: ${state.transactionId}")
-      eventSubscriber ! UnsubscribeFromTaggedEvent(self.path.name, transactionId)
-      timers.cancel(TimerKey)
-    }
-    else
-      eventSubscriber ! UpdateOffset(self.path.name, transactionId, eventOffset)
-  }
 
   /**
     * Side effecting transition from rolling back state.
     * --DO NOT call this from recover.
     */
-  private def applySideEffectsFromRollingBack(): Unit = {
-    eventSubscriber ! UpdateOffset(self.path.name, transactionId, eventOffset)
-
-    if (state.currentState == Complete) {
+  private def applySideEffectsFromRollingBack(): Unit =
+    if (state.currentState == Complete)
       log.info(s"Bank account saga rolled back successfully for transactionId: ${state.transactionId}")
-      eventSubscriber ! UnsubscribeFromTaggedEvent(self.path.name, transactionId)
-      timers.cancel(TimerKey)
-    }
-  }
 
   /**
     * Apply SagaStarted event.
@@ -334,7 +286,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     */
   private def applyEvent(event: SagaPendingConfirmed): Unit = {
     state = state.copy(pendingConfirmed = state.pendingConfirmed :+ event.entityId)
-    eventOffset = eventOffset + 1
 
     if ((state.pendingConfirmed.size + state.exceptions.size == state.commands.size) && state.exceptions.isEmpty) {
       state = state.copy(currentState = Committing)
@@ -349,7 +300,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     */
   private def applyEvent(event: SagaExceptionConfirmed): Unit = {
     state = state.copy(exceptions = state.exceptions :+ event.envelope)
-    eventOffset = eventOffset + 1
     checkRollbackCondition()
   }
 
@@ -358,7 +308,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     */
   private def applyEvent(event: SagaCommitConfirmed): Unit = {
     state = state.copy(commitConfirmed = state.commitConfirmed :+ event.entityId)
-    eventOffset = eventOffset + 1
 
     if (state.commitConfirmed.size == state.commands.size) {
       state = state.copy(currentState = Complete)
@@ -378,7 +327,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
     */
   private def applyEvent(event: SagaRollbackConfirmed): Unit = {
     state = state.copy(rollbackConfirmed = state.rollbackConfirmed :+ event.entityId)
-    eventOffset = eventOffset + 1
 
     if (state.rollbackConfirmed.size == state.commands.size - state.exceptions.size) {
       state = state.copy(currentState = Complete)
@@ -407,9 +355,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, eventSubscriber: Act
       applyEvent(rollback)
     case RecoveryCompleted =>
       if (state != null)
-        if (state.currentState != Complete && state.currentState !=Uninitialized) {
+        if (state.currentState != Complete && state.currentState !=Uninitialized)
           context.system.eventStream.subscribe(self, classOf[EventConfirmed])
-          eventSubscriber ! SubscribeToTaggedEvent(self.path.name, transactionId, eventOffset)
-        }
   }
 }

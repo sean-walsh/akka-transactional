@@ -6,5 +6,7 @@ package object example {
 
   type EntityId = String
 
+  type EventTag = String
+
   type TransactionId = String
 }
