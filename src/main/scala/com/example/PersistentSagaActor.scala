@@ -1,7 +1,8 @@
 package com.example
 
-import akka.actor.{ActorLogging, ActorRef, Props, ReceiveTimeout, Timers}
+import akka.actor.{ActorLogging, ActorNotFound, ActorRef, Props, ReceiveTimeout, Timers}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
+import akka.util.Timeout
 import com.example.bankaccount.BankAccountEvents.BankAccountTransactionalExceptionEvent
 
 import scala.concurrent.ExecutionContext
@@ -62,6 +63,7 @@ object PersistentSagaActor {
 
   case class SagaState(
     transactionId: String,
+    originalEventTag: EventTag,
     description: String,
     currentState: String = Uninitialized,
     commands: Seq[TransactionalCommand] = Seq.empty,
@@ -73,8 +75,8 @@ object PersistentSagaActor {
   /**
     * Props factory method.
     */
-  def props(persistentEntityRegion: ActorRef): Props =
-    Props(new PersistentSagaActor(persistentEntityRegion))
+  def props(persistentEntityRegion: ActorRef, nodeEventTag: EventTag): Props =
+    Props(new PersistentSagaActor(persistentEntityRegion, nodeEventTag))
 }
 
 /**
@@ -85,7 +87,7 @@ object PersistentSagaActor {
   *   Any resending of retried commands, commits or rollbacks should also be ignored by the entities, easily
   *   accomplished with 'become' state changes.
   */
-class PersistentSagaActor(persistentEntityRegion: ActorRef)
+class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventTag)
   extends Timers with PersistentActor with ActorLogging {
 
   import PersistentSagaActor._
@@ -93,6 +95,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
   import PersistentSagaActorEvents._
   import SagaStates._
   import TaggedEventSubscription._
+  import TransientTaggedEventSubscription._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
 
@@ -117,13 +120,22 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     */
   private def uninitialized: Receive = {
     case StartSaga(transactionId, description, commands) =>
-      persist(SagaStarted(transactionId, description, commands)) { event =>
+      persist(SagaStarted(transactionId, description, commands, nodeEventTag)) { event =>
         applyEvent(event)
         applySideEffectsToPending(commands)
       }
     case ReceiveTimeout =>
       log.error(s"saga for transaction $transactionId never received StartSaga command.")
       context.stop(self)
+  }
+
+  /**
+    * Mix this into receives awaiting transaction completions to ensure a transient subscription is
+    * always up across timeouts.
+    */
+  private def transientTaggedEventSubscriptionRestart(): Receive = {
+    case TransientTaggedEventSubscriptionTimedOut(transientEventTag)
+      if transientEventTag == state.originalEventTag => conditionallySpinUpEventSubscriber(state.originalEventTag)
   }
 
   /**
@@ -261,8 +273,9 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Apply SagaStarted event.
     */
   private def applyEvent(event: SagaStarted): Unit = {
-    state = SagaState(transactionId, event.description, Pending, event.commands)
-    context.become(pending.orElse(stateReporting))
+    state = SagaState(transactionId, event.originalEventTag, event.description, Pending, event.commands)
+    context.become(pending.orElse(transientTaggedEventSubscriptionRestart).orElse(stateReporting))
+    conditionallySpinUpEventSubscriber(state.originalEventTag)
   }
 
   /**
@@ -278,7 +291,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     }
     else if ((state.pendingConfirmed.size + state.exceptions.size == state.commands.size) && !state.exceptions.isEmpty) {
       state = state.copy(currentState = RollingBack)
-      context.become(rollingBack.orElse(stateReporting))
+      context.become(rollingBack.orElse(transientTaggedEventSubscriptionRestart).orElse(stateReporting))
     }
 
   /**
@@ -289,7 +302,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
 
     if ((state.pendingConfirmed.size + state.exceptions.size == state.commands.size) && state.exceptions.isEmpty) {
       state = state.copy(currentState = Committing)
-      context.become(committing.orElse(stateReporting))
+      context.become(committing.orElse(transientTaggedEventSubscriptionRestart).orElse(stateReporting))
     }
     else
       checkRollbackCondition()
@@ -357,5 +370,24 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
       if (state != null)
         if (state.currentState != Complete && state.currentState !=Uninitialized)
           context.system.eventStream.subscribe(self, classOf[EventConfirmed])
+  }
+
+  /**
+    * In the case that this saga has restarted on or been moved to another node, will ensure that there is an event
+    * subscriber for the original eventTag.
+    */
+  private def conditionallySpinUpEventSubscriber(originalEventTag: EventTag): Unit = {
+    if (originalEventTag != nodeEventTag) {
+      // Spin up my own event subscriber, unless one already exists.
+      val duration: FiniteDuration = context.system.settings.config
+        .getDuration("akka-saga.saga.event-subscription-lookup-timeout").toNanos.nanos
+      implicit val timeout = Timeout(duration)
+
+      (context.actorSelection(Constants.taggedEventSubscriptionActorPrefix + s"/$originalEventTag")
+        .resolveOne()).recover {
+        case ActorNotFound(_) => context.system.actorOf(TransientTaggedEventSubscription.props(nodeEventTag),
+          Constants.taggedEventSubscriptionActorPrefix + s"/$nodeEventTag")
+      }
+    }
   }
 }

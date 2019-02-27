@@ -20,7 +20,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   import PersistentSagaActorCommands._
 
   // Generate a unique eventTag to be used for tagging all event for entities instantiated on this node.
-  val eventTag: EventTag = UUID.randomUUID().toString
+  val nodeEventTag: EventTag = UUID.randomUUID().toString
 
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -35,14 +35,15 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
-    entityProps = bankaccount.BankAccountActor.props(eventTag),
+    entityProps = bankaccount.BankAccountActor.props(nodeEventTag),
     settings = ClusterShardingSettings(system),
     extractEntityId = bankAccountEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor
   )
 
   // Per node event subscriber.
-  system.actorOf(TaggedEventSubscription.props(eventTag))
+  system.actorOf(NodeTaggedEventSubscription.props(nodeEventTag),
+    Constants.taggedEventSubscriptionActorPrefix + s"/$nodeEventTag")
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -57,7 +58,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account-saga",
-    entityProps = PersistentSagaActor.props(bankAccountRegion),
+    entityProps = PersistentSagaActor.props(bankAccountRegion, nodeEventTag),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor

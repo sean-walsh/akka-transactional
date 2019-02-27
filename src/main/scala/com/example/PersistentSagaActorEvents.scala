@@ -9,8 +9,8 @@ object PersistentSagaActorEvents {
 
   sealed trait PersistentSagaActorEvent
 
-  case class SagaStarted(transactionId: TransactionId, description: String, commands: Seq[TransactionalCommand])
-    extends PersistentSagaActorEvent
+  case class SagaStarted(transactionId: TransactionId, description: String, commands: Seq[TransactionalCommand],
+                         originalEventTag: EventTag) extends PersistentSagaActorEvent
 
   case class SagaPendingConfirmed(transactionId: TransactionId, entityId: EntityId) extends PersistentSagaActorEvent
 
