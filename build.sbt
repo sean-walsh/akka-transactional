@@ -27,30 +27,30 @@ libraryDependencies ++= Seq(
   "org.scalatest"             %% "scalatest"                  % "3.0.5"         % "test"
 )
 
-lazy val app = project in file(".") enablePlugins (SbtReactiveAppPlugin, Cinnamon)
+//lazy val app = project in file(".")//.enablePlugins (SbtReactiveAppPlugin, Cinnamon)
 mainClass in Compile := Some("com.example.AkkaSagaApp")
 
-endpoints += TcpEndpoint("cinnamon", 9091, None)
+//endpoints += TcpEndpoint("cinnamon", 9091, None)
 
-// Reactive CLI integration for Kubernetes
-enableAkkaClusterBootstrap := true
-endpoints += HttpEndpoint("http", 8080, HttpIngress(Seq(80), Seq("akka-saga.io"), Seq("/")))
+//// Reactive CLI integration for Kubernetes
+//enableAkkaClusterBootstrap := true
+//endpoints += HttpEndpoint("http", 8080, HttpIngress(Seq(80), Seq("akka-saga.io"), Seq("/")))
+//
+//annotations := Map(
+//  "prometheus.io/scrape" -> "true",
+//  "prometheus.io/port" -> "9091"
+//)
 
-annotations := Map(
-  "prometheus.io/scrape" -> "true",
-  "prometheus.io/port" -> "9091"
-)
-
-libraryDependencies += Cinnamon.library.cinnamonCHMetrics
-libraryDependencies += Cinnamon.library.cinnamonAkka
-libraryDependencies += Cinnamon.library.cinnamonAkkaStream
-libraryDependencies += Cinnamon.library.cinnamonAkkaHttp
-libraryDependencies += Cinnamon.library.cinnamonPrometheus
-libraryDependencies += Cinnamon.library.cinnamonPrometheusHttpServer
-libraryDependencies += Cinnamon.library.cinnamonJvmMetricsProducer
-
-cinnamonLogLevel := "INFO"
-cinnamon in run := true
-cinnamon in test := false
+//libraryDependencies += Cinnamon.library.cinnamonCHMetrics
+//libraryDependencies += Cinnamon.library.cinnamonAkka
+//libraryDependencies += Cinnamon.library.cinnamonAkkaStream
+//libraryDependencies += Cinnamon.library.cinnamonAkkaHttp
+//libraryDependencies += Cinnamon.library.cinnamonPrometheus
+//libraryDependencies += Cinnamon.library.cinnamonPrometheusHttpServer
+//libraryDependencies += Cinnamon.library.cinnamonJvmMetricsProducer
+//
+//cinnamonLogLevel := "INFO"
+//cinnamon in run := true
+//cinnamon in test := false
 
 fork := true

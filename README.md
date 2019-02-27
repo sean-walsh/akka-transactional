@@ -1,4 +1,4 @@
-# akka-saga
+# akka-transactional
 
 ## Implementation notes
 
@@ -25,6 +25,11 @@ There is full integration into the Lightbend Enterprise Suite 2.0 for visibility
 This is a use case I heard not once but twice in the financial sector. It involves a batch of bank
 account transactions, in this case withdrawals and deposits. If any single one of the transactions
 fail, the entire batch must fail.
+
+## use case 2 --todo
+
+Have completely separate functionality, such as anomalies cancel
+a transaction within a given time window.
 
 ## Deployment
 
