@@ -1,6 +1,6 @@
-package com
+package com.lightbend.transactional
 
-package object example {
+package object lightbend {
 
   type PersistenceId = String
 

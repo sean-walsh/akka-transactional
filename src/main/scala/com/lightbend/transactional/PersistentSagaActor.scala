@@ -1,10 +1,11 @@
-package com.example
+package com.lightbend.transactional
 
 import akka.actor.{ActorLogging, ActorNotFound, ActorRef, Props, ReceiveTimeout, Timers}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
 import akka.util.Timeout
-import com.example.PersistentSagaActorCommands._
-import com.example.PersistentSagaActorEvents._
+import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
+import com.lightbend.transactional.lightbend.{EventTag, PersistenceId}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._

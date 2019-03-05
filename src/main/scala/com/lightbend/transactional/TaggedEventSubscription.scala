@@ -1,12 +1,13 @@
-package com.example
+package com.lightbend.transactional
 
 import akka.actor.{Actor, Props, ReceiveTimeout}
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
-import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.scaladsl.EventsByTagQuery
+import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.stream.ActorMaterializer
-import com.example.PersistentSagaActorEvents.TransactionalEventEnvelope
+import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
+import com.lightbend.transactional.lightbend.{EventTag, TransactionId}
 
 import scala.concurrent.duration._
 

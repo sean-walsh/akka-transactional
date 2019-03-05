@@ -1,4 +1,4 @@
-package com.example
+package com.example.bankaccount
 
 import java.util.UUID
 
@@ -9,7 +9,9 @@ import akka.management.cluster.bootstrap.ClusterBootstrap
 import akka.management.scaladsl.AkkaManagement
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
-import com.example.bankaccount.BankAccountActor
+import com.example.bankaccount.BankAccountCommands.BankAccountCommand
+import com.lightbend.transactional._
+import com.lightbend.transactional.lightbend.EventTag
 import com.typesafe.config.ConfigFactory
 
 import scala.concurrent.duration._
@@ -21,7 +23,6 @@ import scala.math.abs
   */
 abstract class BaseApp(implicit val system: ActorSystem) {
 
-  import bankaccount.BankAccountCommands._
   import PersistentSagaActorCommands._
 
   lazy val config = ConfigFactory.load()
@@ -48,7 +49,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
-    entityProps = bankaccount.BankAccountActor.props(nodeEventTag),
+    entityProps = BankAccountActor.props(nodeEventTag),
     settings = ClusterShardingSettings(system),
     extractEntityId = bankAccountEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor
@@ -89,8 +90,8 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     *
     * @return BankAccountHttpServer
     */
-  private def createHttpServer(): AkkaSagaHttpServer = {
+  private def createHttpServer(): BankAccountHttpServer = {
     implicit val timeout: Timeout = Timeout(5.seconds)
-    new AkkaSagaHttpServer(bankAccountRegion, bankAccountSagaRegion)(system, timeout)
+    new BankAccountHttpServer(bankAccountRegion, bankAccountSagaRegion)(system, timeout)
   }
 }

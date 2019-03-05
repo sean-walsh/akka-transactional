@@ -1,4 +1,6 @@
-package com.example
+package com.lightbend.transactional
+
+import com.lightbend.transactional.lightbend.{EntityId, TransactionId}
 
 /**
   * Wrapping "Envelope" commands to be handled by entities participating in a saga.

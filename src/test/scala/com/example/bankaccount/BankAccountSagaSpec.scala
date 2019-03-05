@@ -10,8 +10,10 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.PersistentSagaActorEvents._
-import com.example._
+import com.lightbend.transactional.{NodeTaggedEventSubscription, PersistentSagaActor}
+import com.lightbend.transactional.PersistentSagaActorCommands._
+import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.lightbend.{EventTag, TransactionId}
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -56,7 +58,6 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
   import BankAccountCommands._
   import BankAccountEvents._
   import PersistentSagaActor._
-  import com.example.PersistentSagaActorCommands._
   import SagaStates._
 
   override def afterAll: Unit = {

@@ -1,6 +1,7 @@
-package com.example
+package com.lightbend.transactional
 
-import com.example.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.lightbend.{EntityId, EventTag, TransactionId}
 
 /**
   * Wrapping "Envelope" events to be handled by entities participating in a saga.

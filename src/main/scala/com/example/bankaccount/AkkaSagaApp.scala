@@ -1,4 +1,4 @@
-package com.example
+package com.example.bankaccount
 
 import akka.actor.ActorSystem
 import com.typesafe.config.ConfigFactory

@@ -10,9 +10,10 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.PersistentSagaActorCommands._
-import com.example.PersistentSagaActorEvents._
-import com.example.EventTag
+import com.example.bankaccount.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActorCommands._
+import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.lightbend.EventTag
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 

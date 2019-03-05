@@ -3,9 +3,10 @@ package com.example.bankaccount
 import akka.actor.{ActorLogging, Props, Stash}
 import akka.persistence.PersistentActor
 import akka.persistence.journal.Tagged
-import com.example.EventTag
-import com.example.PersistentSagaActorCommands._
-import com.example.PersistentSagaActorEvents._
+import com.example.bankaccount.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActorCommands._
+import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.lightbend.EventTag
 
 /**
   * Bank account companion object.

@@ -1,6 +1,7 @@
 package com.example.bankaccount
 
-import com.example.PersistentSagaActorEvents.{TransactionalEvent, TransactionalExceptionEvent}
+import com.example.bankaccount.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActorEvents.{TransactionalEvent, TransactionalExceptionEvent}
 
 /**
   * Events issued by a bank account.

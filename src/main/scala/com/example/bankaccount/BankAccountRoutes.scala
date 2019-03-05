@@ -11,6 +11,7 @@ import akka.http.scaladsl.server.Directives._
 import akka.util.Timeout
 import spray.json._
 import BankAccountCommands._
+import com.example.bankaccount.bankaccount.AccountNumber
 
 import scala.concurrent.ExecutionContext
 
@@ -61,7 +62,7 @@ class TransactionIdGeneratorImpl extends TransactionIdGenerator {
   */
 trait BankAccountRoutes extends BankAccountJsonSupport {
 
-  import com.example.PersistentSagaActorCommands._
+  import com.lightbend.transactional.PersistentSagaActorCommands._
 
   def bankAccountSagaRegion: ActorRef
   def bankAccountRegion: ActorRef

@@ -1,7 +1,8 @@
 package com.example.bankaccount
 
-import com.example.PersistentSagaActorCommands.TransactionalCommand
-import com.example._
+import com.example.bankaccount.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.lightbend.EntityId
 
 /**
   * Commands handled by a bank account.

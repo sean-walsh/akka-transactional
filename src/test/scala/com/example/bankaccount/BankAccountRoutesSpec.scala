@@ -5,7 +5,7 @@ import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.testkit.ScalatestRouteTest
 import akka.testkit.{TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.PersistentSagaActorCommands.StartSaga
+import com.lightbend.transactional.PersistentSagaActorCommands._
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
 import scala.concurrent.duration._
