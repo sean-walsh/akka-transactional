@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name:  akka-transactional
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: akka-transactional
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: akka-transactional
+subjects:
+  - kind: ServiceAccount
+    name:  akka-transactional
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: akka-transactional
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: akka-transactional
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: akka-transactional
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: akka-transactional
+    spec:
+      containers:
+        - image: gabbi/akka-k8s-2:0.1
+          imagePullPolicy: IfNotPresent
+          name: akka-transactional
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
+          ports:
+            - name: remoting
+              containerPort: 2551
+            - name: api
+              containerPort: 8080
+            - name: management
+              containerPort: 8558
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      serviceAccount: akka-transactional

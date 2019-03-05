@@ -10,6 +10,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Source
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
+import com.example.PersistentSagaActorEvents._
 import com.example._
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}

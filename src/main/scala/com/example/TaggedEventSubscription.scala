@@ -6,7 +6,7 @@ import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.stream.ActorMaterializer
-import com.example.PersistentSagaActor.TransactionalEventEnvelope
+import com.example.PersistentSagaActorEvents.TransactionalEventEnvelope
 
 import scala.concurrent.duration._
 
@@ -14,12 +14,6 @@ import scala.concurrent.duration._
   * Companion to EventSubscriptionNodeSingleton.
   */
 object TaggedEventSubscription {
-
-  // Used to send to actor selection, named with an eventTag.
-  case object SubscriptionQuery
-
-  // Designates that a currently running subscription exists on this node.
-  case class SubscriptionExists(eventTag: String)
 
   // Wrapper for a confirmed event from the event log.
   case class EventConfirmed(eventTag: EventTag, transactionId: TransactionId, envelope: TransactionalEventEnvelope)

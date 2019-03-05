@@ -24,12 +24,21 @@ There is full integration into the Lightbend Enterprise Suite 2.0 for visibility
 
 This is a use case I heard not once but twice in the financial sector. It involves a batch of bank
 account transactions, in this case withdrawals and deposits. If any single one of the transactions
-fail, the entire batch must fail.
+fail, the entire batch must fail. This ACID type transaction pattern works fully
+within an Akka cluster and does not need Kafka, though it would be a nice addition
+to add a Kafka option for integration across completely disparate systems. For
+high performance applications, using the eventlog instead of Kafka should provide
+near real time performance.
+
 
 ## use case 2 --todo
 
 Have completely separate functionality, such as anomalies cancel
-a transaction within a given time window.
+a transaction within a given time window. It would be possible to co-locate
+a security type application within the same cluster as the transactional
+application(s) such as bank account for realtime inspection and interuption
+of tranacations. This can also optionally utilize Kafka instead of the event
+log or in addition for nice decoupled integration across services. 
 
 ## Deployment
 

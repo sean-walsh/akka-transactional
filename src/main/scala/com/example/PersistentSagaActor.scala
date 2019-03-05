@@ -3,7 +3,8 @@ package com.example
 import akka.actor.{ActorLogging, ActorNotFound, ActorRef, Props, ReceiveTimeout, Timers}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
 import akka.util.Timeout
-import com.example.bankaccount.BankAccountEvents.BankAccountTransactionalExceptionEvent
+import com.example.PersistentSagaActorCommands._
+import com.example.PersistentSagaActorEvents._
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -14,41 +15,6 @@ import scala.concurrent.duration._
 object PersistentSagaActor {
 
   val EntityPrefix = "persistent-saga-actor-"
-
-  // Envelope to wrap events.
-  trait TransactionalEventEnvelope {
-    def transactionId: TransactionId
-    def entityId: EntityId
-    def event: TransactionalEvent
-  }
-
-  // Transactional command wrappers.
-  sealed trait TransactionalCommandWrapper
-  case class StartTransaction(transactionId: TransactionId, command: TransactionalCommand) extends TransactionalCommandWrapper
-  case class CommitTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-  case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-
-  // Use this command to complete an unsuccessful transaction and put the entity back into ready state.
-  case class CompleteTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-
-  // Transactional event wrappers.
-  case class TransactionStarted(transactionId: TransactionId, entityId: EntityId, event: TransactionalEvent) extends TransactionalEventEnvelope
-  case class TransactionCleared(transactionId: TransactionId, entityId: EntityId, event: TransactionalEvent) extends TransactionalEventEnvelope
-  case class TransactionReversed(transactionId: TransactionId, entityId: EntityId, event: TransactionalEvent) extends TransactionalEventEnvelope
-
-  // Use this event to complete an unsuccessful transaction and put the entity back into ready state.
-  case class TransactionComplete(transactionId: TransactionId, entityId: EntityId, event: TransactionalEvent) extends TransactionalEventEnvelope
-
-  // Trait for any entity commands participating in a saga.
-  trait TransactionalCommand {
-    def entityId: EntityId
-  }
-
-  // Trait for any entity events participating in a saga.
-  trait TransactionalEvent
-
-  // Trait for any entity events participating in a saga that are exceptions.
-  trait TransactionalExceptionEvent extends TransactionalEvent
 
   // States of a saga
   object SagaStates  {
@@ -80,9 +46,9 @@ object PersistentSagaActor {
 }
 
 /**
-  * This is effectively a long lived saga that operates within an Akka cluster. Classic saga patterns will be followed,
-  * such as retrying rollback over and over as well as retry of transactions over and over if necessary, before
-  * rollback.
+  * This is effectively a long lived transaction that operates within an Akka cluster. Classic saga patterns
+  * will be followed, such as retrying rollback over and over as well as retry of transactions over and over if
+  * necessary, before rollback.
   * --Retry is exhaustive in that all events will be resubscribed and ignored if already processed.
   *   Any resending of retried commands, commits or rollbacks should also be ignored by the entities, easily
   *   accomplished with 'become' state changes.
@@ -98,10 +64,9 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventT
   import TransientTaggedEventSubscription._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
-
   override def persistenceId: String = EntityPrefix + self.path.name
-
   private val transactionId = self.path.name
+  context.setReceiveTimeout(10.seconds)
 
   // How long to stick around for reporting purposes after completion.
   private val keepAliveAfterCompletion: FiniteDuration =
@@ -110,7 +75,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventT
   private var state: SagaState = null
 
   final override def receiveCommand: Receive = uninitialized.orElse(stateReporting)
-  context.setReceiveTimeout(10.seconds)
 
   /**
     * In this state we are hobbled until we are sent the start message. Instantiation of this actor has to be in two
@@ -130,15 +94,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventT
   }
 
   /**
-    * Mix this into receives awaiting transaction completions to ensure a transient subscription is
-    * always up across timeouts.
-    */
-  private def transientTaggedEventSubscriptionRestart(): Receive = {
-    case TransientTaggedEventSubscriptionTimedOut(transientEventTag)
-      if transientEventTag == state.originalEventTag => conditionallySpinUpEventSubscriber(state.originalEventTag)
-  }
-
-  /**
     * The pending state. No commit OR rollback will occur until all pending events are in place, as per a Saga.
     * Here we receive event subscription messages applicable to "pending".
     */
@@ -147,7 +102,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventT
       envelope match {
         case started: TransactionStarted =>
           envelope.event match {
-            case _: BankAccountTransactionalExceptionEvent =>
+            case _: TransactionalExceptionEvent =>
               if (!state.exceptions.exists(_.entityId == envelope.entityId)) {
                 persist(SagaExceptionConfirmed(transactionId, envelope)) { event =>
                   applyEvent(event)
@@ -370,6 +325,15 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: EventT
       if (state != null)
         if (state.currentState != Complete && state.currentState !=Uninitialized)
           context.system.eventStream.subscribe(self, classOf[EventConfirmed])
+  }
+
+  /**
+    * Mix this into receives awaiting transaction completions to ensure a transient subscription is
+    * always up across timeouts.
+    */
+  private def transientTaggedEventSubscriptionRestart(): Receive = {
+    case TransientTaggedEventSubscriptionTimedOut(transientEventTag)
+      if transientEventTag == state.originalEventTag => conditionallySpinUpEventSubscriber(state.originalEventTag)
   }
 
   /**

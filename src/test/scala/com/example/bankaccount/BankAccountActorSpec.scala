@@ -10,7 +10,9 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.{EventTag, PersistentSagaActor}
+import com.example.PersistentSagaActorCommands._
+import com.example.PersistentSagaActorEvents._
+import com.example.EventTag
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -64,7 +66,6 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
   "a BankAccount" should {
 
     import BankAccountActor._
-    import PersistentSagaActor._
 
     val CustomerNumber: String = "customerNumber"
     val AccountNumber: AccountNumber = "accountNumber1"

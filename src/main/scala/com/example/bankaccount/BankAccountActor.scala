@@ -4,6 +4,8 @@ import akka.actor.{ActorLogging, Props, Stash}
 import akka.persistence.PersistentActor
 import akka.persistence.journal.Tagged
 import com.example.EventTag
+import com.example.PersistentSagaActorCommands._
+import com.example.PersistentSagaActorEvents._
 
 /**
   * Bank account companion object.
@@ -49,7 +51,6 @@ class BankAccountActor(eventTag: EventTag) extends PersistentActor with ActorLog
   import BankAccountActor._
   import BankAccountCommands._
   import BankAccountEvents._
-  import com.example.PersistentSagaActor._
 
   override def persistenceId: String = self.path.name
 

@@ -1,6 +1,6 @@
 package com.example.bankaccount
 
-import com.example.PersistentSagaActor.TransactionalCommand
+import com.example.PersistentSagaActorCommands.TransactionalCommand
 import com.example._
 
 /**
