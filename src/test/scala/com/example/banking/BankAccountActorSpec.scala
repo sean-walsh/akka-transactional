@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 import akka.NotUsed
 import akka.actor.{ActorRef, ActorSystem, PoisonPill, Terminated}
@@ -10,7 +10,7 @@ import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Sink, Source}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.bankaccount.bankaccount.AccountNumber
+import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
 import com.lightbend.transactional.lightbend.EventTag

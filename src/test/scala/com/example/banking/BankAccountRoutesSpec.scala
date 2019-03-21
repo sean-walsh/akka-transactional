@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 import akka.actor.{Actor, Props}
 import akka.http.scaladsl.model.StatusCodes

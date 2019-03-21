@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 import akka.NotUsed
 import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props, Terminated}

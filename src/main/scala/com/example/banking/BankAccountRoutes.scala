@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 import java.util.UUID
 
@@ -11,7 +11,7 @@ import akka.http.scaladsl.server.Directives._
 import akka.util.Timeout
 import spray.json._
 import BankAccountCommands._
-import com.example.bankaccount.bankaccount.AccountNumber
+import com.example.banking.bankaccount.AccountNumber
 
 import scala.concurrent.ExecutionContext
 

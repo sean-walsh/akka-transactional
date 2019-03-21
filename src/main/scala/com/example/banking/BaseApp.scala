@@ -1,6 +1,4 @@
-package com.example.bankaccount
-
-import java.util.UUID
+package com.example.banking
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.Cluster
@@ -9,9 +7,8 @@ import akka.management.cluster.bootstrap.ClusterBootstrap
 import akka.management.scaladsl.AkkaManagement
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
-import com.example.bankaccount.BankAccountCommands.BankAccountCommand
+import com.example.banking.BankAccountCommands.BankAccountCommand
 import com.lightbend.transactional._
-import com.lightbend.transactional.lightbend.EventTag
 import com.typesafe.config.ConfigFactory
 
 import scala.concurrent.duration._
@@ -19,7 +16,6 @@ import scala.math.abs
 
 /**
   * Test friendly abstract application.
-  * @param system ActorSystem
   */
 abstract class BaseApp(implicit val system: ActorSystem) {
 
@@ -32,9 +28,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   AkkaManagement(system).start()
   ClusterBootstrap(system).start()
-
-  // Generate a unique eventTag to be used for tagging all event for entities instantiated on this node.
-  val nodeEventTag: EventTag = UUID.randomUUID().toString
 
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -49,15 +42,11 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account",
-    entityProps = BankAccountActor.props(nodeEventTag),
+    entityProps = BankAccountActor.props,
     settings = ClusterShardingSettings(system),
     extractEntityId = bankAccountEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor
   )
-
-  // Per node event subscriber.
-  system.actorOf(NodeTaggedEventSubscription.props(nodeEventTag),
-    Constants.taggedEventSubscriptionActorPrefix + s"/$nodeEventTag")
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -72,7 +61,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
     typeName = "bank-account-saga",
-    entityProps = PersistentSagaActor.props(bankAccountRegion, nodeEventTag),
+    entityProps = PersistentSagaActor.props(bankAccountRegion),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
     extractShardId = bankAccountShardIdExtractor

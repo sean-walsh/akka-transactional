@@ -25,8 +25,4 @@ object PersistentSagaActorCommands {
   case class StartTransaction(transactionId: TransactionId, command: TransactionalCommand) extends TransactionalCommandWrapper
   case class CommitTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
   case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-
-  // Use this command to complete an unsuccessful transaction and put the entity back into ready state.
-  case class CompleteTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-
 }
