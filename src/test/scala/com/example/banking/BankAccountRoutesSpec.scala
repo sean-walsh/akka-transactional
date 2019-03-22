@@ -5,6 +5,7 @@ import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.testkit.ScalatestRouteTest
 import akka.testkit.{TestKit, TestProbe}
 import akka.util.Timeout
+import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -30,7 +31,9 @@ class BankAccountRoutesSpec extends WordSpecLike
   val bankAccountRegionProbe: TestProbe = TestProbe()
   override val bankAccountRegion = system.actorOf(Props(new Actor {
     override def receive: Receive = {
-      case cmd: CreateBankAccount => bankAccountRegionProbe.ref ! cmd
+      case cmd: CreateBankAccount =>
+        bankAccountRegionProbe.ref ! cmd
+        sender() ! Ack
     }
   }))
 
@@ -38,7 +41,9 @@ class BankAccountRoutesSpec extends WordSpecLike
   val bankAccountSagaRegionProbe: TestProbe = TestProbe()
   override val bankAccountSagaRegion = system.actorOf(Props(new Actor {
     override def receive: Receive = {
-      case cmd: StartSaga =>  bankAccountSagaRegionProbe.ref ! cmd
+      case cmd: StartSaga =>
+        bankAccountSagaRegionProbe.ref ! cmd
+        sender() ! Ack
     }
   }))
 

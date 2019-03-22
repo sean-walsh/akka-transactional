@@ -1,51 +1,32 @@
 package com.example.banking
 
-import akka.NotUsed
-import akka.actor.{ActorRef, ActorSystem, PoisonPill, Terminated}
-import akka.pattern.ask
-import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
+import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props, Terminated}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
-import akka.persistence.query.{EventEnvelope, PersistenceQuery}
+import akka.persistence.query.PersistenceQuery
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.{Sink, Source}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
+import com.example.banking.BankAccountActor.{Balance, GetBalance}
 import com.example.banking.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActor
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
-import com.lightbend.transactional.lightbend.EventTag
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
-import scala.concurrent.Await
 import scala.concurrent.duration._
 
 object BankAccountActorSpec {
-
-  val Cassandra = false
-
-  private val Journal =
-    if (Cassandra) {
-      """
-        |akka.persistence.journal.plugin = "cassandra-journal"
-        |akka.persistence.snapshot-store.plugin = "cassandra-snapshot-store"
-        |cassandra-query-journal.refresh-interval = 20ms
-      """.stripMargin
-    }
-    else {
-      """
-        |akka.persistence.journal.plugin = "akka.persistence.journal.leveldb"
-        |akka.persistence.journal.leveldb.dir = "target/leveldb"
-        |akka.persistence.snapshot-store.plugin = "akka.persistence.snapshot-store.local"
-        |akka.persistence.snapshot-store.local.dir = "target/snapshots"
-      """.stripMargin
-    }
 
   val Config =
     """
       |akka.actor.provider = "local"
       |akka.actor.warn-about-java-serializer-usage = "false"
-    """.stripMargin + Journal
+      |akka.persistence.journal.plugin = "akka.persistence.journal.leveldb"
+      |akka.persistence.journal.leveldb.dir = "target/leveldb"
+      |akka.persistence.snapshot-store.plugin = "akka.persistence.snapshot-store.local"
+      |akka.persistence.snapshot-store.local.dir = "target/snapshots"
+    """.stripMargin
 }
 
 class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFactory.parseString(BankAccountActorSpec.Config)))
@@ -58,146 +39,175 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
     TestKit.shutdownActorSystem(system)
   }
 
-  implicit val timeout =
-    if (BankAccountActorSpec.Cassandra)
-      Timeout(20.seconds)
-    else
-      Timeout(5.seconds)
+  implicit val timeout = Timeout(5.seconds)
+  val OriginalTransactionId = "transactionId1"
+  val SecondTransactionId = "transactionId2"
+  val ThirdTransactionId = "transactionId3"
+
+  // Mock saga actor for transaction 1
+  system.actorOf(Props(new Actor {
+    override def receive: Receive = {
+      case EventConfirmationSentToSaga(deliveryId, transactionId, _) if transactionId == OriginalTransactionId =>
+        sender() ! SagaDeliveryReceipt(deliveryId)
+    }
+  }),s"${PersistentSagaActor.EntityPrefix}$OriginalTransactionId")
+
+  // Mock saga actor for transaction 2
+  system.actorOf(Props(new Actor {
+    override def receive: Receive = {
+      case EventConfirmationSentToSaga(deliveryId, transactionId, _) if transactionId == SecondTransactionId =>
+        sender() ! SagaDeliveryReceipt(deliveryId)
+    }
+  }),s"${PersistentSagaActor.EntityPrefix}$SecondTransactionId")
+
+  // Mock saga actor for transaction 3
+  system.actorOf(Props(new Actor {
+    override def receive: Receive = {
+      case EventConfirmationSentToSaga(deliveryId, transactionId, _) if transactionId == ThirdTransactionId =>
+        sender() ! SagaDeliveryReceipt(deliveryId)
+    }
+  }),s"${PersistentSagaActor.EntityPrefix}$ThirdTransactionId")
 
   "a BankAccount" should {
-
-    import BankAccountActor._
 
     val CustomerNumber: String = "customerNumber"
     val AccountNumber: AccountNumber = "accountNumber1"
     val persistenceId: String = BankAccountActor.EntityPrefix + AccountNumber
-    val eventTag: EventTag = "someEventTag"
-    val bankAccount: ActorRef = system.actorOf(BankAccountActor.props(eventTag), persistenceId)
+    val bankAccount: ActorRef = system.actorOf(BankAccountActor.props, persistenceId)
 
     implicit val mat = ActorMaterializer()(system)
+    val readJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
 
-    val readJournal =
-      if (BankAccountActorSpec.Cassandra)
-      PersistenceQuery(system).readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
-    else
-      PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
+    import scala.collection.mutable.ListBuffer
 
-    "properly be created with CreateBankAccount command" in {
+    "properly initialize with CreateBankAccount command" in {
       bankAccount ! CreateBankAccount(CustomerNumber, AccountNumber)
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, Active, 0, 0))
 
-      val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 0L, Long.MaxValue)
-      val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
-      evt shouldBe(BankAccountCreated(CustomerNumber, AccountNumber))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 0L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
+
+      val ExpectedEvents = ListBuffer(BankAccountCreated(CustomerNumber, AccountNumber))
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
     "accept pending DepositFunds command and transition to inTransaction state" in {
-      val TransactionId = "transactionId1"
-      val Amount = BigDecimal.valueOf(10)
-      val cmd = StartTransaction(TransactionId, DepositFunds(AccountNumber, Amount))
+      val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(10))
+      val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
+      val cmd = StartTransaction(OriginalTransactionId, Deposit)
       bankAccount ! cmd
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, InTransaction, 0, 10))
 
-      val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 2L, Long.MaxValue)
-      val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
-      evt shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 2L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
+
+      val ExpectedEvents = List(
+        TransactionStarted(OriginalTransactionId, AccountNumber, deposited),
+        EventConfirmationSentToSaga(1L, OriginalTransactionId, TransactionStarted(OriginalTransactionId, AccountNumber, deposited)),
+        EventConfirmedReceipt(SagaDeliveryReceipt(1L), TransactionStarted(OriginalTransactionId, AccountNumber, deposited))
+      )
+
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
     "stash pending WithdrawFunds command while inTransaction state" in {
-      val PreviousTransactionId = "transactionId1"
-      val PreviousAmount = BigDecimal.valueOf(10)
-      val TransactionId = "transactionId2"
-      val Amount = BigDecimal.valueOf(5)
-      val cmd = StartTransaction(TransactionId, WithdrawFunds(AccountNumber, Amount))
+      val OriginalAmount = BigDecimal.valueOf(10)
+      val Withdrawal = WithdrawFunds(AccountNumber, BigDecimal.valueOf(5))
+      val cmd = StartTransaction(SecondTransactionId, Withdrawal)
       bankAccount ! cmd
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, InTransaction, 0, 10))
 
-      val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 2L, Long.MaxValue)
-      val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
-      evt shouldBe(TransactionStarted(PreviousTransactionId, AccountNumber, FundsDeposited(AccountNumber, PreviousAmount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 4L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
+
+      val ExpectedEvents = List(
+        EventConfirmedReceipt(SagaDeliveryReceipt(1L),
+        TransactionStarted(OriginalTransactionId, AccountNumber, FundsDeposited(AccountNumber, OriginalAmount)))
+      )
+
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
     "accept commit of DepositFunds for first transaction and transition back to inTransaction state to handle " +
       "stashed Pending(WithdrawFunds)" in {
-      val PreviousTransactionId = "transactionId1"
-      val PreviousAmount = BigDecimal.valueOf(10)
-      val TransactionId = "transactionId2"
       val Amount = BigDecimal.valueOf(5)
-      val cmd = CommitTransaction(PreviousTransactionId, AccountNumber)
+      val cmd = CommitTransaction(OriginalTransactionId, AccountNumber)
       bankAccount ! cmd
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, InTransaction, 10, 5))
 
-      val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 3L, Long.MaxValue)
-      val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
-      evt1 shouldBe(TransactionCleared(PreviousTransactionId, AccountNumber, FundsDeposited(AccountNumber, PreviousAmount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 5L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
 
-      val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 4L, Long.MaxValue)
-      val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
-      evt2 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+      val ExpectedEvents = List(
+        TransactionCleared(OriginalTransactionId, AccountNumber),
+        EventConfirmationSentToSaga(2L, OriginalTransactionId, TransactionCleared(OriginalTransactionId, AccountNumber)),
+        EventConfirmedReceipt(SagaDeliveryReceipt(2), TransactionCleared(OriginalTransactionId, AccountNumber)),
+        TransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, 5)),
+        EventConfirmationSentToSaga(3L, SecondTransactionId, TransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount))),
+        EventConfirmedReceipt(SagaDeliveryReceipt(3L), TransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+      )
+
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
-    "accept commit of WithdrawFunds and transition back to active state" in {
-      val TransactionId = "transactionId2"
-      val Amount = BigDecimal.valueOf(5)
-      val cmd = CommitTransaction(TransactionId, AccountNumber)
+    "accept commit of previously stashed WithdrawFunds and transition back to active state" in {
+      val cmd = CommitTransaction(SecondTransactionId, AccountNumber)
       bankAccount ! cmd
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, Active, 5, 0))
 
-      val src: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 5L, Long.MaxValue)
-      val evt = Await.result(src.map(_.event).runWith(Sink.head), timeout.duration)
-      evt shouldBe(TransactionCleared(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 11L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
+
+      val ExpectedEvents = List(
+        TransactionCleared(SecondTransactionId, AccountNumber),
+        EventConfirmationSentToSaga(4L, SecondTransactionId, TransactionCleared(SecondTransactionId, AccountNumber)),
+        EventConfirmedReceipt(SagaDeliveryReceipt(4L), TransactionCleared(SecondTransactionId, AccountNumber)),
+      )
+
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
-    "accept pending DepositFunds command and then a rollback" in {
-      val TransactionId = "transactionId3"
-      val Amount = BigDecimal.valueOf(11)
-      val cmd1 = StartTransaction(TransactionId, DepositFunds(AccountNumber, Amount))
-      bankAccount ! cmd1
+    "start another transaction in order to rollback" in {
+      val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(1))
+      val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
+      val cmd = StartTransaction(ThirdTransactionId, Deposit)
+      bankAccount ! cmd
 
-      val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 6L, Long.MaxValue)
-      val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
-      evt1 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 14L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
 
-      val cmd2 = RollbackTransaction(TransactionId, AccountNumber)
-      bankAccount ! cmd2
-      val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 7L, Long.MaxValue)
-      val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
-      evt2 shouldBe(TransactionReversed(TransactionId, AccountNumber, FundsDeposited(AccountNumber, Amount)))
+      val ExpectedEvents = List(
+        TransactionStarted(ThirdTransactionId, AccountNumber, deposited),
+        EventConfirmationSentToSaga(5L, ThirdTransactionId, TransactionStarted(ThirdTransactionId, AccountNumber, deposited)),
+        EventConfirmedReceipt(SagaDeliveryReceipt(5L), TransactionStarted(ThirdTransactionId, AccountNumber, deposited))
+      )
 
-      bankAccount ! GetBankAccountState
-      expectMsg(BankAccountState(persistenceId, Active, 5, 0))
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
-    "accept pending WithdrawFunds command and then a rollback" in {
-      val TransactionId = "transactionId4"
-      val Amount = BigDecimal.valueOf(1)
-      val cmd1 = StartTransaction(TransactionId, WithdrawFunds(AccountNumber, Amount))
-      bankAccount ! cmd1
+    "properly handle a rollback on third transaction" in {
+      val cmd = RollbackTransaction(ThirdTransactionId, AccountNumber)
+      bankAccount ! cmd
 
-      val src1: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 8L, Long.MaxValue)
-      val evt1 = Await.result(src1.map(_.event).runWith(Sink.head), timeout.duration)
-      evt1 shouldBe(TransactionStarted(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(persistenceId, 17L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }
 
-      val cmd2 = RollbackTransaction(TransactionId, AccountNumber)
-      bankAccount ! cmd2
-      val src2: Source[EventEnvelope, NotUsed] =
-        readJournal.eventsByPersistenceId(persistenceId, 9L, Long.MaxValue)
-      val evt2 = Await.result(src2.map(_.event).runWith(Sink.head), timeout.duration)
-      evt2 shouldBe(TransactionReversed(TransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+      val ExpectedEvents = List(
+        TransactionReversed(ThirdTransactionId, AccountNumber),
+        EventConfirmationSentToSaga(6L, ThirdTransactionId, TransactionReversed(ThirdTransactionId, AccountNumber)),
+        EventConfirmedReceipt(SagaDeliveryReceipt(6L), TransactionReversed(ThirdTransactionId, AccountNumber))
+      )
+
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
     "replay properly" in {
@@ -206,11 +216,9 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       bankAccount ! PoisonPill
       probe.expectMsgClass(classOf[Terminated])
 
-      val bankAccount2 = system.actorOf(BankAccountActor.props(eventTag), persistenceId)
-
-      def wait: Boolean = Await.result((bankAccount2 ? GetBankAccountState).mapTo[BankAccountState],
-        timeout.duration) == BankAccountState(persistenceId, Active, 5, 0)
-      awaitCond(wait, timeout.duration, 100.milliseconds)
+      val bankAccount2 = system.actorOf(BankAccountActor.props, persistenceId)
+      probe.send(bankAccount2, GetBalance(AccountNumber))
+      probe.expectMsg(Balance(BigDecimal.valueOf(0), BigDecimal.valueOf(5))) // Deposit of 10 and withdrawal of 5.
     }
   }
 }

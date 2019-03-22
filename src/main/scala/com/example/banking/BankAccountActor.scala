@@ -2,6 +2,7 @@ package com.example.banking
 
 import akka.actor.Props
 import com.example.banking.bankaccount.AccountNumber
+import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.TransactionalEntity
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
@@ -13,6 +14,10 @@ case object BankAccountActor {
 
   val PersistenceIdPrefix = "BankAccount|"
   val EntityPrefix = "bank-account-"
+
+  // To query bank account balance.
+  case class Balance(pendingBalance: BigDecimal, balance: BigDecimal)
+  case class GetBalance(accountNumber: AccountNumber)
 
   /**
     * Factory method for BankAccount actor.
@@ -27,6 +32,7 @@ case object BankAccountActor {
   */
 class BankAccountActor extends TransactionalEntity {
 
+  import BankAccountActor._
   import BankAccountCommands._
   import BankAccountEvents._
 
@@ -50,6 +56,7 @@ class BankAccountActor extends TransactionalEntity {
       persist(BankAccountCreated(customerId, accountNumber)) { _ =>
         log.info(s"Creating BankAccount for customer $customerId with account number $accountNumber")
         context.become(active)
+        sender() ! Ack
       }
   }
 
@@ -72,17 +79,17 @@ class BankAccountActor extends TransactionalEntity {
           else {
             persist(TransactionStarted(transactionId, accountNumber,
               InsufficientFunds(accountNumber, state.balance, amount))) { started =>
-              onTransactionStartedPersist(started)
+                onTransactionStartedPersist(started)
               }
           }
       }
+    case _: GetBalance => sender() ! Balance(state.pendingBalance, state.balance)
   }
 
   override def applyTransactionStarted(started: TransactionStarted): Unit =
     started.event match {
       case _: BankAccountTransactionalEvent =>
         val amount = started.event.asInstanceOf[BankAccountTransactionalEvent].amount
-
         started.event match {
           case _: FundsDeposited =>
             state = state.copy(pendingBalance = state.balance + amount)
@@ -104,19 +111,10 @@ class BankAccountActor extends TransactionalEntity {
   override def receiveRecover: Receive = {
     case _: BankAccountCreated =>
       context.become(active)
+    case started: TransactionStarted =>
 
-//    case _: TransactionStarted =>
-//      // We don't change state until saga confirms receipt.
-//
-//    case _: TransactionCleared =>
-//    // We don't change state until saga confirms receipt.
-//
-//    case _: TransactionReversed =>
-//    // We don't change state until saga confirms receipt.
-
-    case confirm: EventConfirmed =>
+    case confirm: EventConfirmationSentToSaga =>
       awaitConfirmationReceipt(confirm)
-
     case receipt: EventConfirmedReceipt =>
       onEventConfirmedReceiptRecovery(receipt)
   }

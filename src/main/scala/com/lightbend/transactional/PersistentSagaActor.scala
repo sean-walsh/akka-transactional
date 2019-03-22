@@ -1,9 +1,7 @@
 package com.lightbend.transactional
 
 import akka.actor.{ActorLogging, ActorRef, Props, ReceiveTimeout, Timers}
-import akka.pattern.ask
 import akka.persistence.{PersistentActor, RecoveryCompleted}
-import akka.util.Timeout
 import com.lightbend.transactional.lightbend.PersistenceId
 
 import scala.concurrent.ExecutionContext
@@ -73,6 +71,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
       persist(SagaStarted(transactionId, description, commands)) { event =>
         applySagaStartedEvent(event)
         applySideEffectsToPending(commands)
+        sender() ! Ack
       }
     case ReceiveTimeout =>
       log.error(s"saga for transaction $transactionId never received StartSaga command.")
@@ -84,7 +83,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive event subscription messages applicable to "pending".
     */
   private def pending: Receive = {
-    case _ @ EventConfirmed(deliveryId, transactionId, envelope) =>
+    case _ @ EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
       envelope match {
         case started: TransactionStarted =>
           started.event match {
@@ -114,7 +113,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive messages from the entities applicable to "committing".
     */
   private def committing: Receive = {
-    case EventConfirmed(deliveryId, transactionId, envelope) =>
+    case EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
       envelope match {
           case _: TransactionCleared =>
             if (!state.commitConfirmed.contains(envelope.entityId)) {
@@ -133,7 +132,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case EventConfirmed(deliveryId, transactionId, envelope) =>
+    case EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
       envelope match {
           case _: TransactionReversed =>
             if (!state.rollbackConfirmed.contains(envelope.entityId)) {
@@ -151,13 +150,10 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     */
   private def applySideEffectsToPending(commands: Seq[TransactionalCommand]): Unit = {
     log.info(s"starting new saga with transactionId: $transactionId")
-    context.system.eventStream.subscribe(self, classOf[EventConfirmed])
+    context.system.eventStream.subscribe(self, classOf[EventConfirmationSentToSaga])
 
-    implicit val timeout: Timeout = Timeout(10.seconds) // TODO: make configurable.
     commands.foreach ( cmd =>
-      (persistentEntityRegion ? StartTransaction(state.transactionId, cmd)).mapTo[Ack].foreach( ack =>
-        state = state.copy(acks = state.acks :+ cmd.entityId) // TODO: implement retry for missing acks.
-      )
+      persistentEntityRegion ! StartTransaction(state.transactionId, cmd)
     )
   }
 
@@ -261,6 +257,6 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     case RecoveryCompleted =>
       if (state != null)
         if (this.receive != uninitialized)
-          context.system.eventStream.subscribe(self, classOf[EventConfirmed])
+          context.system.eventStream.subscribe(self, classOf[EventConfirmationSentToSaga])
   }
 }

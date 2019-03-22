@@ -49,7 +49,7 @@ object PersistentSagaActorEvents {
     * This message should be sent by all participating entities as a side effect of each
     * persist. This is the implementation of "read your writes" for this functionality.
     */
-  case class EventConfirmed(deliveryId: Long, transactionId: TransactionId, envelope: TransactionalEventEnvelope)
+  case class EventConfirmationSentToSaga(deliveryId: Long, transactionId: TransactionId, envelope: TransactionalEventEnvelope)
 
   /**
     * The confirmations that the saga has seen the above message and is sent to the participating entity.

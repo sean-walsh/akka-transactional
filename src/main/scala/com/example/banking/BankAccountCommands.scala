@@ -28,8 +28,4 @@ object BankAccountCommands {
     extends BankAccountTransactionalCommand {
     override val entityId: EntityId = accountNumber
   }
-
-  case class GetBankAccount(accountNumber: AccountNumber) extends BankAccountCommand
-
-  case class GetBankAccountState(accountNumber: AccountNumber) extends BankAccountCommand
 }
