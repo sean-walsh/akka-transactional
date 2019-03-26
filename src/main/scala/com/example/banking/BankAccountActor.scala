@@ -1,6 +1,7 @@
 package com.example.banking
 
 import akka.actor.Props
+import akka.persistence.journal.Tagged
 import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.TransactionalEntity
@@ -12,7 +13,9 @@ import com.lightbend.transactional.PersistentSagaActorEvents._
   */
 case object BankAccountActor {
 
-  val EntityPrefix = "bank-account-"
+  final val EntityPrefix = "bank-account-"
+
+  final val RegionName = "bank-account"
 
   // To query bank account balance.
   case class Balance(pendingBalance: BigDecimal, balance: BigDecimal)
@@ -63,22 +66,26 @@ class BankAccountActor extends TransactionalEntity {
     * behavior in addition if appropriate, just make sure to use stash.
     */
   override def active: Receive = {
-    case StartTransaction(transactionId, _, cmd) =>
+    case StartTransaction(transactionId, _, eventTag, cmd) =>
       cmd match {
         case DepositFunds(accountNumber, amount) =>
-          persist(TransactionStarted(transactionId, accountNumber, FundsDeposited(accountNumber, amount))) { started =>
-            onTransactionStartedPersist(started)
+          val started = TransactionStarted(transactionId, accountNumber, eventTag, FundsDeposited(accountNumber, amount))
+          persist(Tagged(started, Set(eventTag))) { _ =>
+            onTransactionStarted(started)
           }
         case WithdrawFunds(accountNumber, amount) =>
-          if (state.balance - amount >= 0)
-            persist(TransactionStarted(transactionId, accountNumber, FundsWithdrawn(accountNumber, amount))) { started =>
-              onTransactionStartedPersist(started)
+          if (state.balance - amount >= 0) {
+            val started = TransactionStarted(transactionId, accountNumber, eventTag, FundsWithdrawn(accountNumber, amount))
+            persist(Tagged(started, Set(eventTag))) { _ =>
+              onTransactionStarted(started)
             }
+          }
           else {
-            persist(TransactionStarted(transactionId, accountNumber,
-              InsufficientFunds(accountNumber, state.balance, amount))) { started =>
-                onTransactionStartedPersist(started)
-              }
+            val started = TransactionStarted(transactionId, accountNumber, eventTag, InsufficientFunds(accountNumber,
+              state.balance, amount))
+            persist(Tagged(started, Set(eventTag))) { _ =>
+              onTransactionStarted(started)
+            }
           }
       }
     case _: GetBalance => sender() ! Balance(state.pendingBalance, state.balance)
@@ -109,13 +116,6 @@ class BankAccountActor extends TransactionalEntity {
   override def receiveRecover: Receive = {
     case _: BankAccountCreated =>
       context.become(active)
-    case started: TransactionStarted =>
-      onTransactionStartedRecovery(started)
-    case cleared: TransactionCleared =>
-      onTransactionClearedRecovery(cleared)
-    case reversed: TransactionReversed =>
-      onTransactionReversedRecovery(reversed)
-    case receipt: EventConfirmedReceipt =>
-      onEventConfirmedReceiptRecovery(receipt)
+    case envelope: TransactionalEventEnvelope => recover(envelope)
   }
 }

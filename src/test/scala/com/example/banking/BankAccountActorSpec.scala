@@ -1,6 +1,6 @@
 package com.example.banking
 
-import akka.actor.{Actor, ActorRef, ActorSystem, PoisonPill, Props, Terminated}
+import akka.actor.{ActorRef, ActorSystem, PoisonPill, Terminated}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.PersistenceQuery
 import akka.stream.ActorMaterializer
@@ -44,14 +44,6 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
   val SecondTransactionId = "transactionId2"
   val ThirdTransactionId = "transactionId3"
 
-  // Saga shard region mock.
-  system.actorOf(Props(new Actor() {
-    override def receive: Receive = {
-      case envelope: TransactionalEventEnvelope =>
-        sender() ! SagaDeliveryReceipt(envelope.entityId)
-    }
-  }), "persistent-saga-region")
-
   "a BankAccount" should {
 
     val CustomerNumber: String = "customerNumber"
@@ -65,6 +57,8 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       case x => events += x
     }(ActorMaterializer()(system))
 
+    val nodeEventTag: String = "somenodeeventtag"
+
     "properly initialize with CreateBankAccount command" in {
       bankAccount ! CreateBankAccount(CustomerNumber, AccountNumber)
 
@@ -76,12 +70,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       events.remove(events.size - 1)
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(10))
       val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartTransaction(OriginalTransactionId, Deposit.accountNumber, Deposit)
+      val cmd = StartTransaction(OriginalTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionStarted(OriginalTransactionId, AccountNumber, deposited),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionStarted(OriginalTransactionId, AccountNumber, deposited))
+        TransactionStarted(OriginalTransactionId, AccountNumber, nodeEventTag, deposited),
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -92,17 +85,14 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
 
       events = new ListBuffer[Any]()
       val Withdrawal = WithdrawFunds(AccountNumber, BigDecimal.valueOf(5))
-      val cmd1 = StartTransaction(SecondTransactionId, Withdrawal.accountNumber, Withdrawal)
+      val cmd1 = StartTransaction(SecondTransactionId, Withdrawal.accountNumber, nodeEventTag, Withdrawal)
       bankAccount ! cmd1
-      val Amount = BigDecimal.valueOf(5)
-      val cmd2 = CommitTransaction(OriginalTransactionId, AccountNumber)
+      val cmd2 = CommitTransaction(OriginalTransactionId, AccountNumber, nodeEventTag)
       bankAccount ! cmd2
 
       val ExpectedEvents = List(
-        TransactionCleared(OriginalTransactionId, AccountNumber),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionCleared(OriginalTransactionId, AccountNumber)),
-        TransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, 5)),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, Amount)))
+        TransactionCleared(OriginalTransactionId, AccountNumber, nodeEventTag),
+        TransactionStarted(SecondTransactionId, AccountNumber, nodeEventTag, FundsWithdrawn(AccountNumber, 5)),
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -110,12 +100,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
 
     "accept commit of previously stashed WithdrawFunds and transition back to active state" in {
       events = new ListBuffer[Any]()
-      val cmd = CommitTransaction(SecondTransactionId, AccountNumber)
+      val cmd = CommitTransaction(SecondTransactionId, AccountNumber, nodeEventTag)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionCleared(SecondTransactionId, AccountNumber),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionCleared(SecondTransactionId, AccountNumber)),
+        TransactionCleared(SecondTransactionId, AccountNumber, nodeEventTag)
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -125,12 +114,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       events = new ListBuffer[Any]()
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(1))
       val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartTransaction(ThirdTransactionId, Deposit.accountNumber, Deposit)
+      val cmd = StartTransaction(ThirdTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionStarted(ThirdTransactionId, AccountNumber, deposited),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionStarted(ThirdTransactionId, AccountNumber, deposited))
+        TransactionStarted(ThirdTransactionId, AccountNumber, nodeEventTag, deposited)
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -138,18 +126,17 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
 
     "properly handle a rollback on third transaction" in {
       events = new ListBuffer[Any]()
-      val cmd = RollbackTransaction(ThirdTransactionId, AccountNumber)
+      val cmd = RollbackTransaction(ThirdTransactionId, AccountNumber, nodeEventTag)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionReversed(ThirdTransactionId, AccountNumber),
-        EventConfirmedReceipt(SagaDeliveryReceipt(AccountNumber), TransactionReversed(ThirdTransactionId, AccountNumber))
+        TransactionReversed(ThirdTransactionId, AccountNumber, nodeEventTag)
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
     }
 
-    "replay properly" in {
+    "recover" in {
       val probe = TestProbe()
       probe.watch(bankAccount)
       bankAccount ! PoisonPill

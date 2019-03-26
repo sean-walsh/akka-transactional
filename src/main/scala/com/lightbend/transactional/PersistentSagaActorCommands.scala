@@ -26,7 +26,10 @@ object PersistentSagaActorCommands {
     def entityId: EntityId
   }
 
-  case class StartTransaction(transactionId: TransactionId, entityId: EntityId, command: TransactionalCommand) extends TransactionalCommandWrapper
-  case class CommitTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
-  case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
+  case class StartTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String,
+                              command: TransactionalCommand) extends TransactionalCommandWrapper
+  case class CommitTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String)
+    extends TransactionalCommandWrapper
+  case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String)
+    extends TransactionalCommandWrapper
 }

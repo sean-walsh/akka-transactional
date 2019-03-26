@@ -1,12 +1,14 @@
 package com.example.banking
 
+import java.util.UUID
+
 import akka.actor.{Actor, ActorSystem, PoisonPill, Props}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.PersistenceQuery
 import akka.stream.ActorMaterializer
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.lightbend.transactional.PersistentSagaActor
+import com.lightbend.transactional.{NodeTaggedEventSubscription, PersistentSagaActor, TaggedEventSubscription}
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
 import com.lightbend.transactional.lightbend.TransactionId
@@ -49,10 +51,8 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
           system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}$accountNumber") ! cmd
         case tcw: TransactionalCommandWrapper =>
           system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}${tcw.entityId}") ! tcw
-        case msg @ SagaDeliveryReceipt(entityId) =>
-          system.actorSelection(s"/user/${BankAccountActor.EntityPrefix}${entityId}") ! msg
       }
-    }), "bank-account-region")
+    }), s"${BankAccountActor.RegionName}")
 
     // Saga shard region mock.
     system.actorOf(Props(new Actor() {
@@ -60,7 +60,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
         case envelope: TransactionalEventEnvelope =>
           system.actorSelection(s"/user/${PersistentSagaActor.EntityPrefix}${envelope.transactionId}") ! envelope
       }
-    }), "persistent-saga-region")
+    }), s"${PersistentSagaActor.RegionName}")
 
     // Instantiate the bank accounts (sharding would do this in clustered mode).
     val Account11: String = "accountNumber11"
@@ -86,6 +86,11 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       case x => events33 += x
     }(ActorMaterializer()(system))
 
+    // Create node event listener for saga subscription.
+    val nodeEventTag: String = UUID.randomUUID().toString
+    system.actorOf(NodeTaggedEventSubscription.props(nodeEventTag),
+      s"${TaggedEventSubscription.ActorNamePrefix}$nodeEventTag")
+
     // "Create" the bank accounts previously instantiated.
     val CustomerId = "customer1"
     bankAccountRegion ! CreateBankAccount(CustomerId, Account11)
@@ -93,8 +98,8 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     bankAccountRegion ! CreateBankAccount(CustomerId, Account33)
 
     "commit transaction when no exceptions" in {
-      val TransactionId: TransactionId = "transactionId11"
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
+      val TransactionId: TransactionId = "transactionId1000"
+      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
       val cmds = Seq(
         DepositFunds(Account11, 10),
@@ -105,24 +110,18 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
 
       val ExpectedEvents11: Seq[Any] = Seq(
-        TransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10)),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account11), TransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10))),
-        TransactionCleared(TransactionId, Account11),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account11), TransactionCleared(TransactionId, Account11))
+        TransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
+        TransactionCleared(TransactionId, Account11, nodeEventTag),
       )
 
       val ExpectedEvents22: Seq[Any] = Seq(
-        TransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20)),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account22), TransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20))),
-        TransactionCleared(TransactionId, Account22),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account22), TransactionCleared(TransactionId, Account22))
+        TransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 20)),
+        TransactionCleared(TransactionId, Account22, nodeEventTag),
       )
 
       val ExpectedEvents33: Seq[Any] = Seq(
-        TransactionStarted(TransactionId, Account33, FundsDeposited(Account33, 30)),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account33), TransactionStarted(TransactionId, Account33, FundsDeposited(Account33, 30))),
-        TransactionCleared(TransactionId, Account33),
-        EventConfirmedReceipt(SagaDeliveryReceipt(Account33), TransactionCleared(TransactionId, Account33))
+        TransactionStarted(TransactionId, Account33, nodeEventTag, FundsDeposited(Account33, 30)),
+        TransactionCleared(TransactionId, Account33, nodeEventTag),
       )
 
       awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents11 not received for $Account11.")
@@ -134,81 +133,41 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       probe.expectTerminated(saga, timeout.duration)
     }
 
-//    "rollback transaction when with exception on single bank account" in {
-//      events11 = new ListBuffer[Any]()
-//      events22 = new ListBuffer[Any]()
-//      events33 = new ListBuffer[Any]()
-//      val TransactionId: TransactionId = "transactionId22"
-//      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
-//
-//      val cmds = Seq(
-//        WithdrawFunds("accountNumber11", 11), // cause overdraft
-//        DepositFunds("accountNumber22", 1),
-//        DepositFunds("accountNumber33", 2),
-//      )
-//
-//      saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
-//      val ExpectedEvents11: Seq[Any] = Seq(
-//        TransactionStarted(TransactionId, Account11, InsufficientFunds(Account11, 10, 11)),
-//        EventConfirmedReceipt(SagaDeliveryReceipt(Account11), TransactionStarted(TransactionId, Account11, InsufficientFunds(Account11, 10, 11)))
-//      )
-//
-//      val ExpectedEvents22: Seq[Any] = Seq(
-//        TransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20)),
-//        EventConfirmedReceipt(SagaDeliveryReceipt(Account22), TransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20))),
-//        TransactionReversed(TransactionId, Account22),
-//        EventConfirmedReceipt(SagaDeliveryReceipt(Account22), TransactionReversed(TransactionId, Account22))
-//      )
-//
-//      val ExpectedEvents33: Seq[Any] = Seq(
-//        TransactionStarted(TransactionId, Account33, FundsDeposited(Account33, 30)),
-//        EventConfirmedReceipt(SagaDeliveryReceipt(Account33), TransactionStarted(TransactionId, Account33, FundsDeposited(Account33, 30))),
-//        TransactionReversed(TransactionId, Account33),
-//        EventConfirmedReceipt(SagaDeliveryReceipt(Account33), TransactionReversed(TransactionId, Account33))
-//      )
-//
-//      Thread.sleep(5000)
-//      println(events11.mkString(",\n"))
-//      println(events22.mkString(",\n"))
-//      println(events33.mkString(",\n"))
-//      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents11 not received for $Account11.")
-//      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents22 not received for $Account22.")
-//      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents33 not received for $Account33.")
-//      val probe = TestProbe()
-//      probe.watch(saga)
-//      saga ! PoisonPill
-//      probe.expectTerminated(saga, timeout.duration)
-//    }
+    "rollback transaction when with exception on single bank account" in {
+      events11 = new ListBuffer[Any]()
+      events22 = new ListBuffer[Any]()
+      events33 = new ListBuffer[Any]()
+      val TransactionId: TransactionId = "transactionId2000"
+      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
-//    "replay properly" in {
-//      val TransactionId: TransactionId = "transactionId33"
-//      currentTransaction = TransactionId
-//      eventReceiver ! Reset
-//
-//      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventTag), TransactionId)
-//
-//      val cmds = Seq(
-//        DepositFunds("accountNumber11", 50),
-//        DepositFunds("accountNumber22", 60),
-//        DepositFunds("accountNumber33", 70),
-//      )
-//
-//      saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
-//      val sagaProbe: TestProbe = TestProbe()
-//      sagaProbe.watch(saga)
-//
-//      sagaProbe.awaitCond(Await.result((saga ? GetSagaState)
-//        .mapTo[SagaState], timeout.duration).currentState == Complete,
-//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
-//
-//      saga ! PoisonPill
-//      sagaProbe.expectMsgClass(classOf[Terminated])
-//
-//      val saga2 = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventTag), TransactionId)
-//
-//      sagaProbe.awaitCond(Await.result((saga2 ? GetSagaState)
-//        .mapTo[SagaState], timeout.duration).currentState == Complete,
-//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
-//    }
+      val cmds = Seq(
+        WithdrawFunds("accountNumber11", 11), // cause overdraft
+        DepositFunds("accountNumber22", 1),
+        DepositFunds("accountNumber33", 2),
+      )
+
+      saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
+      val ExpectedEvents11: Seq[Any] = Seq(
+        TransactionStarted(TransactionId, Account11, nodeEventTag, InsufficientFunds(Account11, 10, 11)),
+      )
+
+      val ExpectedEvents22: Seq[Any] = Seq(
+        TransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 1)),
+        TransactionReversed(TransactionId, Account22, nodeEventTag),
+      )
+
+      val ExpectedEvents33: Seq[Any] = Seq(
+        TransactionStarted(TransactionId, Account33, nodeEventTag, FundsDeposited(Account33, 2)),
+        TransactionReversed(TransactionId, Account33, nodeEventTag),
+      )
+
+      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents11 not received for $Account11.")
+      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents22 not received for $Account22.")
+      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents33 not received for $Account33.")
+      val probe = TestProbe()
+      probe.watch(saga)
+      saga ! PoisonPill
+      probe.expectTerminated(saga, timeout.duration)
+    }
   }
 }
