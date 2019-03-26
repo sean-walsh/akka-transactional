@@ -1,7 +1,9 @@
 package com.lightbend.transactional
 
 import akka.actor.{ActorLogging, ActorRef, Props, ReceiveTimeout, Timers}
+import akka.pattern.ask
 import akka.persistence.{PersistentActor, RecoveryCompleted}
+import akka.util.Timeout
 import com.lightbend.transactional.lightbend.PersistenceId
 
 import scala.concurrent.ExecutionContext
@@ -42,23 +44,24 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
   import PersistentSagaActorEvents._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
-  override def persistenceId: String = EntityPrefix + self.path.name
-  private val transactionId = self.path.name
+  override def persistenceId: String = self.path.name
+
   context.setReceiveTimeout(10.seconds)
 
   private case class SagaState(
     transactionId: String,
     description: String,
+    currentState: String,
     commands: Seq[TransactionalCommand] = Seq.empty,
     pendingConfirmed: Seq[PersistenceId] = Seq.empty,
     commitConfirmed: Seq[PersistenceId] = Seq.empty,
     rollbackConfirmed: Seq[PersistenceId] = Seq.empty,
     exceptions: Seq[TransactionalEventEnvelope] = Seq.empty,
-    acks: Seq[PersistenceId] = Seq.empty)
+    currentStateAcks: Seq[PersistenceId] = Seq.empty)
 
   private var state: SagaState = null
 
-  final override def receiveCommand: Receive = uninitialized
+  override def receiveCommand: Receive = uninitialized
 
   /**
     * In this state we are hobbled until we are sent the start message. Instantiation of this actor has to be in two
@@ -69,12 +72,12 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
   private def uninitialized: Receive = {
     case StartSaga(transactionId, description, commands) =>
       persist(SagaStarted(transactionId, description, commands)) { event =>
-        applySagaStartedEvent(event)
-        applySideEffectsToPending(commands)
+        applySagaStarted(event)
+        applySagaStartedSideEffects(transactionId, commands)
         sender() ! Ack
       }
     case ReceiveTimeout =>
-      log.error(s"saga for transaction $transactionId never received StartSaga command.")
+      log.error(s"saga for saga ${self.path.name} never received StartSaga command.")
       context.stop(self)
   }
 
@@ -83,26 +86,22 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive event subscription messages applicable to "pending".
     */
   private def pending: Receive = {
-    case _ @ EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
-      envelope match {
-        case started: TransactionStarted =>
-          started.event match {
-            case _: TransactionalExceptionEvent =>
-              if (!state.exceptions.exists(_.entityId == envelope.entityId)) {
-                persist(SagaExceptionConfirmed(transactionId, envelope)) { event =>
-                  applySagaExceptionConfirmedEvent(event)
-                  sender() ! SagaDeliveryReceipt(deliveryId)
-                  applyTransactionStartedEventSideEffects(started)
-                }
-              }
-            case _ =>
-              if (!state.pendingConfirmed.contains(envelope.entityId)) {
-                persist(SagaPendingConfirmed(transactionId, envelope.entityId)) { event =>
-                  applySagaPendingConfirmedEvent(event)
-                  sender() ! SagaDeliveryReceipt(deliveryId)
-                  applyTransactionStartedEventSideEffects(started)
-                }
-              }
+    case started @ TransactionStarted(_, entityId, _) =>
+      started.event match {
+        case _: TransactionalExceptionEvent =>
+          if (!state.exceptions.exists(_.entityId == entityId)) {
+            persist(started) { event =>
+              applyTransactionStartedException(event)
+              persistentEntityRegion ! SagaDeliveryReceipt(entityId)
+              applyTransactionStartedEventSideEffects(started)
+            }
+          }
+        case _ =>
+          if (!state.pendingConfirmed.contains(entityId)) {
+            persist(started) { event =>
+              applyTransactionStarted(event)
+              applyTransactionStartedEventSideEffects(started)
+            }
           }
       }
   }
@@ -113,17 +112,13 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive messages from the entities applicable to "committing".
     */
   private def committing: Receive = {
-    case EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
-      envelope match {
-          case _: TransactionCleared =>
-            if (!state.commitConfirmed.contains(envelope.entityId)) {
-              persist(SagaCommitConfirmed(transactionId, envelope.entityId)) { event =>
-                applySagaCommitConfirmedEvent(event)
-                sender() ! SagaDeliveryReceipt(deliveryId)
-                //applyTransactionClearedSideEffects()
-              }
-            }
+    case cleared @ TransactionCleared(_, entityId) =>
+      if (!state.commitConfirmed.contains(entityId)) {
+        persist(cleared) { event =>
+          persistentEntityRegion ! SagaDeliveryReceipt(entityId)
+          applyTransactionCleared(event)
         }
+      }
   }
 
   /**
@@ -132,29 +127,53 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case EventConfirmationSentToSaga(deliveryId, transactionId, envelope) =>
-      envelope match {
-          case _: TransactionReversed =>
-            if (!state.rollbackConfirmed.contains(envelope.entityId)) {
-              persist(SagaRollbackConfirmed(transactionId, envelope.entityId)) { event =>
-                sender() ! SagaDeliveryReceipt(deliveryId)
-                applySagaRollbackConfirmedEvent(event)
-              }
-            }
+    case reversed @ TransactionReversed(_, entityId) =>
+      if (!state.rollbackConfirmed.contains(entityId)) {
+        persist(reversed) { event =>
+          applyTransactionReversed(event)
+          persistentEntityRegion ! SagaDeliveryReceipt(entityId)
         }
+      }
+  }
+
+  /**
+    * Apply SagaStarted event.
+    */
+  private def applySagaStarted(event: SagaStarted): Unit = {
+    state = SagaState(event.transactionId, event.description, "pending", event.commands)
+    context.become(pending)
   }
 
   /**
     * Side effecting transition from Uninitialized to Pending state.
-    * --DO NOT call this from recover.
     */
-  private def applySideEffectsToPending(commands: Seq[TransactionalCommand]): Unit = {
+  private def applySagaStartedSideEffects(transactionId: String, commands: Seq[TransactionalCommand]): Unit = {
     log.info(s"starting new saga with transactionId: $transactionId")
-    context.system.eventStream.subscribe(self, classOf[EventConfirmationSentToSaga])
 
     commands.foreach ( cmd =>
-      persistentEntityRegion ! StartTransaction(state.transactionId, cmd)
+      persistentEntityRegion ! StartTransaction(state.transactionId, cmd.entityId, cmd)
     )
+  }
+
+  /**
+    * Apply TransactionStarted event.
+    */
+  private def applyTransactionStarted(started: TransactionStarted): Unit = {
+    started.event match {
+      case _: TransactionalExceptionEvent =>
+        state = state.copy(exceptions = state.exceptions :+ started)
+      case _ =>
+        state = state.copy(pendingConfirmed = state.pendingConfirmed :+ started.entityId)
+    }
+
+    if (commitCondition()) {
+      state = state.copy(currentState = "committing", currentStateAcks = Nil)
+      context.become(committing)
+    }
+    else if (rollbackCondition()) {
+      state = state.copy(currentState = "rollingBack", currentStateAcks = Nil)
+      context.become(rollingBack)
+    }
   }
 
   /**
@@ -163,100 +182,110 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef)
   private def applyTransactionStartedEventSideEffects(started: TransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
-        log.error(s"Transaction rolling back when possible due to exception on account ${started.entityId}.")
+        log.info(s"Transaction rolling back when possible due to exception on account ${started.entityId}.")
       case _ =>
+        implicit val timeout: Timeout = Timeout(10.seconds)
+        (persistentEntityRegion ? SagaDeliveryReceipt(started.entityId)).mapTo[Ack].foreach( _ =>
+          state = state.copy(currentStateAcks = state.currentStateAcks :+ started.entityId) // TODO: for use in retry later
+        )
     }
 
-    if (this.receive == committing)
-      state.commands.foreach ( cmd =>
+    if (commitCondition()) {
+      state = state.copy(currentState = "committing", currentStateAcks = Nil)
+      context.become(committing)
+    }
+    else if (rollbackCondition()) {
+      state = state.copy(currentState = "rollingBack", currentStateAcks = Nil)
+      context.become(rollingBack)
+    }
+
+    if (state.currentState == "committing")
+      state.commands.foreach(cmd =>
         persistentEntityRegion ! CommitTransaction(state.transactionId, cmd.entityId)
       )
-    else if (this.receive == rollingBack) {
+    else if (state.currentState == "rollingBack") {
       state.pendingConfirmed.foreach(entityId =>
         persistentEntityRegion ! RollbackTransaction(state.transactionId, entityId)
       )
     }
-    else {
-      log.info(s"Bank account saga completed successfully for transactionId: ${state.transactionId}")
-      context.stop(self)
+  }
+
+  /**
+    * Apply TransactionStarted exception event.
+    */
+  private def applyTransactionStartedException(event: TransactionStarted): Unit = {
+    state = state.copy(exceptions = state.exceptions :+ event)
+    if (rollbackCondition()) {
+      state = state.copy(currentState = "rollingBack", currentStateAcks = Nil)
+      context.become(rollingBack)
     }
   }
 
   /**
-    * Apply SagaStarted event.
+    * Apply TransactionCleared event.
     */
-  private def applySagaStartedEvent(event: SagaStarted): Unit = {
-    state = SagaState(transactionId, event.description, event.commands)
-    context.become(pending)
+  private def applyTransactionCleared(event: TransactionCleared): Unit = {
+    state = state.copy(commitConfirmed = state.commitConfirmed :+ event.entityId)
+
+    if (completionCondition()) {
+      log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
+      context.stop(self)
+    }
+    else {
+      state = state.copy(currentState = "committing", currentStateAcks = Nil)
+      context.become(committing)
+    }
+  }
+
+  /**
+    * Apply TransactionReversed event.
+    */
+  private def applyTransactionReversed(event: TransactionReversed): Unit = {
+    state = state.copy(rollbackConfirmed = state.rollbackConfirmed :+ event.entityId)
+
+    if (completionCondition())
+      context.stop(self)
+  }
+
+  final override def receiveRecover: Receive = {
+    case started: SagaStarted =>
+      applySagaStarted(started)
+    case exception: TransactionStarted if exception.getClass.isAssignableFrom(classOf[TransactionalExceptionEvent]) =>
+      applyTransactionStartedException(exception)
+    case started: TransactionStarted =>
+      applyTransactionStarted(started)
+    case cleared: TransactionCleared =>
+      applyTransactionCleared(cleared)
+    case reversed: TransactionReversed =>
+      applyTransactionReversed(reversed)
+    case RecoveryCompleted =>
+      // Handle here for retry??
   }
 
   /**
     * Checks and conditionally moves to rollback.
     */
-  private def checkRollbackCondition(): Unit =
-    if (state.exceptions.size == state.commands.size)
-      context.stop(self)
-    else if ((state.pendingConfirmed.size + state.exceptions.size == state.commands.size) && !state.exceptions.isEmpty)
-      context.become(rollingBack)
-
-  /**
-    * Apply SagaPendingConfirmed event.
-    */
-  private def applySagaPendingConfirmedEvent(event: SagaPendingConfirmed): Unit = {
-    state = state.copy(pendingConfirmed = state.pendingConfirmed :+ event.entityId)
-
-    if ((state.pendingConfirmed.size + state.exceptions.size == state.commands.size) && state.exceptions.isEmpty)
-      context.become(committing)
+  private def commitCondition(): Boolean =
+    if (state.currentStateAcks.size == state.commands.size + state.exceptions.size)
+      true
     else
-      checkRollbackCondition()
-  }
+      false
 
   /**
-    * Apply SagaExceptionConfirmed event.
+    * Checks and conditionally moves to rollback.
     */
-  private def applySagaExceptionConfirmedEvent(event: SagaExceptionConfirmed): Unit = {
-    state = state.copy(exceptions = state.exceptions :+ event.envelope)
-    checkRollbackCondition()
-  }
-
-  /**
-    * Apply SagaCommitConfirmed event.
-    */
-  private def applySagaCommitConfirmedEvent(event: SagaCommitConfirmed): Unit = {
-    state = state.copy(commitConfirmed = state.commitConfirmed :+ event.entityId)
-
-    if (state.commitConfirmed.size == state.commands.size)
-      context.stop(self)
+  private def rollbackCondition(): Boolean =
+    if (state.currentStateAcks.size == state.commands.size + state.exceptions.size)
+      true
     else
-      context.become(committing)
-  }
+      false
 
   /**
-    * Apply SagaRollbackConfirmed event.
+    * Checks for completion.
     */
-  private def applySagaRollbackConfirmedEvent(event: SagaRollbackConfirmed): Unit = {
-    state = state.copy(rollbackConfirmed = state.rollbackConfirmed :+ event.entityId)
-
-    if (state.rollbackConfirmed.size == state.commands.size - state.exceptions.size)
-      context.stop(self)
+  private def completionCondition(): Boolean =
+    if (state.currentStateAcks.size == state.commands.size + state.exceptions.size)
+      true
     else
-      context.become(rollingBack)
-  }
-
-  final override def receiveRecover: Receive = {
-    case started: SagaStarted =>
-      applySagaStartedEvent(started)
-    case pending: SagaPendingConfirmed =>
-      applySagaPendingConfirmedEvent(pending)
-    case exception: SagaExceptionConfirmed =>
-      applySagaExceptionConfirmedEvent(exception)
-    case commit: SagaCommitConfirmed =>
-      applySagaCommitConfirmedEvent(commit)
-    case rollback: SagaRollbackConfirmed =>
-      applySagaRollbackConfirmedEvent(rollback)
-    case RecoveryCompleted =>
-      if (state != null)
-        if (this.receive != uninitialized)
-          context.system.eventStream.subscribe(self, classOf[EventConfirmationSentToSaga])
-  }
+      false
 }

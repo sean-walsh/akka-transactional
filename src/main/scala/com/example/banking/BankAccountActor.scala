@@ -12,7 +12,6 @@ import com.lightbend.transactional.PersistentSagaActorEvents._
   */
 case object BankAccountActor {
 
-  val PersistenceIdPrefix = "BankAccount|"
   val EntityPrefix = "bank-account-"
 
   // To query bank account balance.
@@ -37,13 +36,12 @@ class BankAccountActor extends TransactionalEntity {
   import BankAccountEvents._
 
   private case class BankAccountState(
-    accountNumber: AccountNumber,
     balance: BigDecimal,
     pendingBalance: BigDecimal)
 
   override def persistenceId: String = self.path.name
 
-  private var state: BankAccountState = BankAccountState(self.path.name, 0, 0)
+  private var state: BankAccountState = BankAccountState(0, 0)
 
   override def receiveCommand: Receive = default
 
@@ -65,7 +63,7 @@ class BankAccountActor extends TransactionalEntity {
     * behavior in addition if appropriate, just make sure to use stash.
     */
   override def active: Receive = {
-    case StartTransaction(transactionId, cmd) =>
+    case StartTransaction(transactionId, _, cmd) =>
       cmd match {
         case DepositFunds(accountNumber, amount) =>
           persist(TransactionStarted(transactionId, accountNumber, FundsDeposited(accountNumber, amount))) { started =>
@@ -112,9 +110,11 @@ class BankAccountActor extends TransactionalEntity {
     case _: BankAccountCreated =>
       context.become(active)
     case started: TransactionStarted =>
-
-    case confirm: EventConfirmationSentToSaga =>
-      awaitConfirmationReceipt(confirm)
+      onTransactionStartedRecovery(started)
+    case cleared: TransactionCleared =>
+      onTransactionClearedRecovery(cleared)
+    case reversed: TransactionReversed =>
+      onTransactionReversedRecovery(reversed)
     case receipt: EventConfirmedReceipt =>
       onEventConfirmedReceiptRecovery(receipt)
   }

@@ -8,6 +8,7 @@ import akka.management.scaladsl.AkkaManagement
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
 import com.example.banking.BankAccountCommands.BankAccountCommand
+import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
 import com.lightbend.transactional._
 import com.typesafe.config.ConfigFactory
 
@@ -31,7 +32,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
-    case cmd: BankAccountCommand => (BankAccountActor.EntityPrefix + cmd.accountNumber, cmd)
+    case cmd: BankAccountCommand => (s"${BankAccountActor.EntityPrefix}${cmd.accountNumber}", cmd)
   }
   val bankAccountShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.shard-count")
   val bankAccountShardIdExtractor: ShardRegion.ExtractShardId = {
@@ -50,13 +51,15 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
-    case cmd: StartSaga => (PersistentSagaActor.EntityPrefix + cmd.transactionId, cmd)
+    case cmd: StartSaga => (s"${PersistentSagaActor.EntityPrefix}${cmd.transactionId}", cmd)
   }
   val sagaShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.saga.shard-count")
   val sagaShardIdExtractor: ShardRegion.ExtractShardId = {
     case cmd: StartSaga =>
       abs(cmd.transactionId.hashCode % sagaShardCount).toString
-    case ShardRegion.StartEntity(id) ⇒
+    case msg: TransactionalEventEnvelope =>
+      abs(msg.transactionId.hashCode % sagaShardCount).toString
+    case ShardRegion.StartEntity(id) =>
       abs(id.hashCode % sagaShardCount).toString
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
@@ -64,7 +67,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     entityProps = PersistentSagaActor.props(bankAccountRegion),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
-    extractShardId = bankAccountShardIdExtractor
+    extractShardId = sagaShardIdExtractor
   )
 
   /**

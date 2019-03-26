@@ -21,8 +21,12 @@ object PersistentSagaActorCommands {
   }
 
   // Transactional command wrappers.
-  sealed trait TransactionalCommandWrapper
-  case class StartTransaction(transactionId: TransactionId, command: TransactionalCommand) extends TransactionalCommandWrapper
+  sealed trait TransactionalCommandWrapper {
+    def transactionId: String
+    def entityId: EntityId
+  }
+
+  case class StartTransaction(transactionId: TransactionId, entityId: EntityId, command: TransactionalCommand) extends TransactionalCommandWrapper
   case class CommitTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
   case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId) extends TransactionalCommandWrapper
 }

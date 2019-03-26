@@ -1,7 +1,8 @@
 package com.lightbend.transactional
 
-import akka.actor.{ActorLogging, Stash}
-import akka.persistence.{AtLeastOnceDelivery, PersistentActor}
+import akka.actor.{ActorLogging, ActorSelection, Stash}
+import akka.persistence.PersistentActor
+import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.PersistentSagaActorCommands.{CommitTransaction, RollbackTransaction, StartTransaction}
 import com.lightbend.transactional.PersistentSagaActorEvents._
 
@@ -9,7 +10,7 @@ import com.lightbend.transactional.PersistentSagaActorEvents._
   * Mixin for a set of behaviors helpful/necessary to participate in a transactional saga.
   * See /bankaccount example for usage.
   */
-trait TransactionalEntity extends PersistentActor with ActorLogging with Stash with AtLeastOnceDelivery {
+trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
 
   /**
     * This is the ready for business receive. Here you handle StartTransaction.
@@ -43,28 +44,17 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash w
   def inTransaction(currentTransactionId: String): Receive = {
     case CommitTransaction(transactionId, entityId) =>
       persist(TransactionCleared(transactionId, entityId)) { cleared =>
-        deliver(context.system.actorSelection(getSagaActorPath(transactionId))) { deliveryId =>
-          val event = EventConfirmationSentToSaga(deliveryId, cleared.transactionId, cleared)
-          persist(event) { confirm =>
-            context.become(awaitSagaCommitConfirmReceipt(confirm, cleared).orElse { case _ => stash })
-          }
-          event
-        }
+        persistentSagaShardRegion ! cleared
+        context.become(awaitSagaCommitConfirmReceipt(cleared).orElse { case _ => stash })
       }
 
     case RollbackTransaction(transactionId, entityId) =>
-      println("rollback")
       persist(TransactionReversed(transactionId, entityId)) { reversed =>
-        deliver(context.system.actorSelection(getSagaActorPath(transactionId))) { deliveryId =>
-          val event = EventConfirmationSentToSaga(deliveryId, reversed.transactionId, reversed)
-          persist(event) { confirm =>
-            context.become(awaitSagaRollbackConfirmReceipt(confirm, reversed).orElse { case _ => stash })
-          }
-          event
-        }
+        persistentSagaShardRegion ! reversed
+        context.become(awaitSagaRollbackConfirmReceipt(reversed).orElse { case _ => stash })
       }
 
-    case StartTransaction(transactionId, _) if transactionId == currentTransactionId =>
+    case StartTransaction(transactionId, _, _) if transactionId == currentTransactionId =>
       // Ignore any duplicate sends of current transaction.
 
     case _ => stash()
@@ -74,27 +64,27 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash w
     * This must be called after persisting TransactionStarted.
     */
   def onTransactionStartedPersist(started: TransactionStarted): Unit = {
-    deliver(context.system.actorSelection(getSagaActorPath(started.transactionId))) { deliveryId =>
-      val event = EventConfirmationSentToSaga(deliveryId, started.transactionId, started)
-      persist(event) { confirm =>
-        context.become(awaitSagaPendingConfirmReceipt(confirm, started).orElse { case _ => stash })
-      }
-      event
-    }
+    persistentSagaShardRegion ! started
+    context.become(awaitSagaPendingConfirmReceipt(started).orElse { case _ => stash })
   }
 
   /**
-    * Call this on recover of EventConfirmed.
+    * Call this on recovery of TransactionStarted.
     */
-  def awaitConfirmationReceipt(confirm: EventConfirmationSentToSaga): Unit =
-    confirm.envelope match {
-      case started: TransactionStarted =>
-        context.become(awaitSagaPendingConfirmReceipt(confirm, started).orElse { case _ => stash })
-      case cleared: TransactionCleared =>
-        context.become(awaitSagaCommitConfirmReceipt(confirm, cleared).orElse { case _ => stash })
-      case reversed: TransactionReversed =>
-        context.become(awaitSagaRollbackConfirmReceipt(confirm, reversed).orElse { case _ => stash })
-    }
+  def onTransactionStartedRecovery(started: TransactionStarted): Unit =
+    context.become(awaitSagaPendingConfirmReceipt(started).orElse { case _ => stash })
+
+  /**
+    * Call this on recovery of TransactionStarted.
+    */
+  def onTransactionClearedRecovery(cleared: TransactionCleared): Unit =
+    context.become(awaitSagaCommitConfirmReceipt(cleared).orElse { case _ => stash })
+
+  /**
+    * Call this on recovery of TransactionReversed.
+    */
+  def onTransactionReversedRecovery(reversed: TransactionReversed): Unit =
+    context.become(awaitSagaRollbackConfirmReceipt(reversed).orElse { case _ => stash })
 
   /**
     * Call this on recover of EventConfirmedReceipt.
@@ -117,14 +107,14 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash w
     * In this state we await confirmation of the event received from the saga.
     * The entity will have to pass a transition to in order to progress to an inTransaction state.
     */
-  private def awaitSagaPendingConfirmReceipt(eventConfirmed: EventConfirmationSentToSaga, started: TransactionStarted): Receive = {
-    case receipt: SagaDeliveryReceipt if receipt.deliveryId == eventConfirmed.deliveryId =>
+  private def awaitSagaPendingConfirmReceipt(started: TransactionStarted): Receive = {
+    case receipt: SagaDeliveryReceipt =>
       persist(EventConfirmedReceipt(receipt, started)) { _ =>
-        confirmDelivery(receipt.deliveryId)
+        sender() ! Ack
         started.event match {
           case ex: TransactionalExceptionEvent =>
             applyTransactionException(ex)
-            context.become(active) // No need for this entity to participate any further in the transaction.
+            context.become(active) // No need for this entity to wait for transaction completion.
           case _ =>
             applyTransactionStarted(started)
             context.become(inTransaction(started.transactionId))
@@ -136,13 +126,13 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash w
   /**
     * In this state we await confirmation of the commit received from the saga.
     */
-  private def awaitSagaCommitConfirmReceipt(eventConfirmed: EventConfirmationSentToSaga, cleared: TransactionCleared): Receive = {
-    case receipt: SagaDeliveryReceipt if receipt.deliveryId == eventConfirmed.deliveryId =>
+  private def awaitSagaCommitConfirmReceipt(cleared: TransactionCleared): Receive = {
+    case receipt: SagaDeliveryReceipt =>
       persist(EventConfirmedReceipt(receipt, cleared)) { _ =>
+        sender() ! Ack
         applyTransactionCleared(cleared)
         context.become(active)
         unstashAll()
-        confirmDelivery(receipt.deliveryId)
       }
     case _ => stash()
   }
@@ -150,18 +140,20 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash w
   /**
     * In this state we await confirmation of the rollback received from the saga.
     */
-  private def awaitSagaRollbackConfirmReceipt(eventConfirmed: EventConfirmationSentToSaga, reversed: TransactionReversed): Receive = {
-    case receipt: SagaDeliveryReceipt if receipt.deliveryId == eventConfirmed.deliveryId =>
+  private def awaitSagaRollbackConfirmReceipt(reversed: TransactionReversed): Receive = {
+    case receipt: SagaDeliveryReceipt =>
       persist(EventConfirmedReceipt(receipt, reversed)) { _ =>
+        sender() ! Ack
         applyTransactionReversed(reversed)
         context.become(active)
-        active
         unstashAll()
-        confirmDelivery(receipt.deliveryId)
       }
     case _ => stash()
   }
 
-  private def getSagaActorPath(transactionId: String): String =
-    s"/user/${PersistentSagaActor.EntityPrefix}$transactionId"
+  /**
+    * The shard region for sagas.
+    */
+  private def persistentSagaShardRegion: ActorSelection =
+    context.actorSelection("/user/persistent-saga-region")
 }
