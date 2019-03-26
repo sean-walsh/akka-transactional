@@ -1,6 +1,6 @@
-package com.example.bankaccount
+package com.example.banking
 
-import com.example.bankaccount.bankaccount.AccountNumber
+import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
 import com.lightbend.transactional.lightbend.EntityId
 
@@ -28,8 +28,4 @@ object BankAccountCommands {
     extends BankAccountTransactionalCommand {
     override val entityId: EntityId = accountNumber
   }
-
-  case class GetBankAccount(accountNumber: AccountNumber) extends BankAccountCommand
-
-  case class GetBankAccountState(accountNumber: AccountNumber) extends BankAccountCommand
 }

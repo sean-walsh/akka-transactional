@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 package object bankaccount {
 

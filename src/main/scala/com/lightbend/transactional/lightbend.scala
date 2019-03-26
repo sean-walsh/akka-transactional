@@ -6,7 +6,5 @@ package object lightbend {
 
   type EntityId = String
 
-  type EventTag = String
-
   type TransactionId = String
 }

@@ -1,4 +1,4 @@
-package com.example.bankaccount
+package com.example.banking
 
 import java.util.UUID
 
@@ -8,12 +8,14 @@ import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.server.Directives.{as, complete, entity, path, post}
 import akka.http.scaladsl.server.Route
 import akka.http.scaladsl.server.Directives._
+import akka.pattern.ask
 import akka.util.Timeout
 import spray.json._
 import BankAccountCommands._
-import com.example.bankaccount.bankaccount.AccountNumber
+import com.example.banking.bankaccount.AccountNumber
 
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 
 /**
   * A wrapper to start a saga containing bank account transactional commands.
@@ -77,18 +79,17 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
       post {
         entity(as[StartBankAccountTransaction]) { dto =>
           val start = StartSaga(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
-          bankAccountSagaRegion ! start
-
-          // No need to have the client wait for a response, failures will be propagated on a separate path.
-          complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
+          implicit val timeout: Timeout = Timeout(10.seconds) // TODO: make configurable.
+          onSuccess((bankAccountSagaRegion ? start)) {
+            case _ => complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
+          }
         }
       } ~
       post {
         entity(as[CreateBankAccount]) { cmd =>
-          bankAccountRegion ! cmd
-
-          // No need to have the client wait for a response, failures will be propagated on a separate path.
-          complete(StatusCodes.Accepted, s"CreateBankAccount accepted with number: ${cmd.accountNumber}")
+          onSuccess((bankAccountRegion ? cmd)) {
+            case _ => complete(StatusCodes.Accepted, s"CreateBankAccount accepted with number: ${cmd.accountNumber}")
+          }
         }
       }
     }

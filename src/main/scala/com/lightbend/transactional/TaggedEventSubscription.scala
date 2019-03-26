@@ -7,32 +7,24 @@ import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.stream.ActorMaterializer
 import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
-import com.lightbend.transactional.lightbend.{EventTag, TransactionId}
 
 import scala.concurrent.duration._
 
-/**
-  * Companion to EventSubscriptionNodeSingleton.
-  */
 object TaggedEventSubscription {
-
-  // Wrapper for a confirmed event from the event log.
-  case class EventConfirmed(eventTag: EventTag, transactionId: TransactionId, envelope: TransactionalEventEnvelope)
+  final val ActorNamePrefix = "tagged-event-subscription-"
 }
 
 /**
   * Subscribes to tagged events and issues those events to the event log.
   */
-abstract class TaggedEventSubscription(eventTag: EventTag) extends Actor {
-
-  import TaggedEventSubscription._
+abstract class TaggedEventSubscription(eventTag: String) extends Actor {
 
   private val query = readJournal()
   implicit val mat: ActorMaterializer = ActorMaterializer()
 
   query.eventsByTag(eventTag, Offset.noOffset).map(_.event).runForeach {
     case envelope: TransactionalEventEnvelope =>
-      context.system.eventStream.publish(EventConfirmed(eventTag, envelope.transactionId, envelope))
+      context.actorSelection(s"/user/${PersistentSagaActor.RegionName}") ! envelope // TODO: figure out retry
   }
 
   override def receive: Receive = Actor.emptyBehavior
@@ -52,21 +44,21 @@ abstract class TaggedEventSubscription(eventTag: EventTag) extends Actor {
   * nodeEventTag
   */
 object NodeTaggedEventSubscription {
-  def props(nodeEventTag: EventTag): Props = Props(new NodeTaggedEventSubscription(nodeEventTag))
+  def props(nodeEventTag: String): Props = Props(new NodeTaggedEventSubscription(nodeEventTag))
 }
 
 /**
   * One per node implementation. This will be up and running as long as the current node is up and running.
   */
-class NodeTaggedEventSubscription(nodeEventTag: EventTag) extends TaggedEventSubscription(nodeEventTag)
+class NodeTaggedEventSubscription(nodeEventTag: String) extends TaggedEventSubscription(nodeEventTag)
 
 /**
   * Companion
   */
 case object TransientTaggedEventSubscription {
-  case class TransientTaggedEventSubscriptionTimedOut(transientEventTag: EventTag)
+  case class TransientTaggedEventSubscriptionTimedOut(transientEventTag: String)
 
-  def props(transientEventTag: EventTag): Props = Props(new TransientTaggedEventSubscription(transientEventTag))
+  def props(transientEventTag: String): Props = Props(new TransientTaggedEventSubscription(transientEventTag))
 }
 
 /**
@@ -75,7 +67,7 @@ case object TransientTaggedEventSubscription {
   * and still needs a subscription. In that case it will just be restarted by that party until it times out
   * again and so on until the saga has completed.
   */
-class TransientTaggedEventSubscription(transientEventTag: EventTag) extends TaggedEventSubscription(transientEventTag) {
+class TransientTaggedEventSubscription(transientEventTag: String) extends TaggedEventSubscription(transientEventTag) {
 
   import TransientTaggedEventSubscription._
 
