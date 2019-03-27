@@ -1,13 +1,17 @@
 package com.lightbend.transactional
 
-import akka.actor.{Actor, Props, ReceiveTimeout}
+import akka.actor.{Actor, ActorLogging, Props, ReceiveTimeout}
+import akka.pattern.ask
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.stream.ActorMaterializer
+import akka.util.Timeout
+import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 object TaggedEventSubscription {
@@ -17,14 +21,19 @@ object TaggedEventSubscription {
 /**
   * Subscribes to tagged events and issues those events to the event log.
   */
-abstract class TaggedEventSubscription(eventTag: String) extends Actor {
+abstract class TaggedEventSubscription(eventTag: String) extends Actor with ActorLogging {
 
   private val query = readJournal()
   implicit val mat: ActorMaterializer = ActorMaterializer()
+  implicit val ec: ExecutionContext = context.dispatcher
 
   query.eventsByTag(eventTag, Offset.noOffset).map(_.event).runForeach {
     case envelope: TransactionalEventEnvelope =>
-      context.actorSelection(s"/user/${PersistentSagaActor.RegionName}") ! envelope // TODO: figure out retry
+      implicit val timeout: Timeout = Timeout(10.seconds)
+      val sagaRegion = s"/user/${PersistentSagaActor.RegionName}"
+      (context.actorSelection(sagaRegion) ? envelope).mapTo[Ack].recover {
+        case _: Throwable => log.info(s"Could not deliver event to $sagaRegion.")
+      }
   }
 
   override def receive: Receive = Actor.emptyBehavior

@@ -16,7 +16,26 @@ one has completed. Stash is used for this.
 Patterns used here are event sourcing of all business components, including the sage as well as 
 CQRS (just commands for now).
 
-I used bank accounts as an example, but this pattern can work for anything, such as order to cash.
+I used bank accounts as an example, but this pattern can work for anything, such as order to cash, something
+like depleting inventory due to adding to a shopping cart and having the inventory made
+available again just by rolling back due to shopping cart timeout or cancellation.
+
+## Items of note
+
+PersistentSagaActor - This is the durable transaction that follows the "read your writes" pattern
+to ensure the participating transactional entities have processed the commands.
+    
+NodeTaggedEventSubscription - A per node tagged event subscriber that receives events on behalf of the
+entities and relays them to the correct PersistentSagaActor.
+    
+TransientTaggedEventSubscription - Same as above, but is instantiated on demand by any saga that finds
+it has been restarted on another node, with that node's NodeTaggedEventSubscription not picking up the 
+events tagged on the saga's previous node. TransientTaggedEventSubscription MAY also be used for retry when
+events are missing for a configured period of time, although the current implementation just does redelivery
+of commands for now.
+
+TransactionalEntity - A trait that abstracts transactional behavior for any participating entity.
+  
 
 ## The original use case
 
