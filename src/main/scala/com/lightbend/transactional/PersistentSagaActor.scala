@@ -1,6 +1,6 @@
 package com.lightbend.transactional
 
-import akka.actor.{ActorLogging, ActorNotFound, ActorRef, Props, ReceiveTimeout}
+import akka.actor.{ActorLogging, ActorNotFound, ActorSelection, Props, ReceiveTimeout, Timers}
 import akka.persistence.PersistentActor
 import akka.util.Timeout
 import com.lightbend.transactional.lightbend.PersistenceId
@@ -25,17 +25,18 @@ object PersistentSagaActor {
   /**
     * Props factory method.
     */
-  def props(persistentEntityRegion: ActorRef, nodeEventTag: String): Props =
-    Props(new PersistentSagaActor(persistentEntityRegion, nodeEventTag))
+  def props(nodeEventTag: String): Props =
+    Props(new PersistentSagaActor(nodeEventTag))
 }
 
 /**
   * This is effectively a long lived transaction that operates within an Akka cluster. Classic saga patterns
   * will be followed, such as retrying rollback over and over as well as retry of transactions over and over if
   * necessary, before rollback.
+  *
+  * All persisted transactions will be tagged with the unique-per-node nodeEventTag.
   */
-class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String)
-  extends PersistentActor with ActorLogging {
+class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentActor with ActorLogging {
 
   import PersistentSagaActor._
   import PersistentSagaActorCommands._
@@ -43,6 +44,13 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
 
   implicit def ec: ExecutionContext = context.system.dispatcher
   override def persistenceId: String = self.path.name
+
+  // How often to retry transaction subscription confirmations missing after a wait time.
+  private val retryAfter: FiniteDuration =
+    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
+
+  private case object Retry
+  private case object TimerKey
 
   context.setReceiveTimeout(10.seconds)
 
@@ -89,6 +97,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
         case _: TransactionalExceptionEvent =>
           if (!state.exceptions.exists(_.entityId == entityId)) {
             persist(started) { event =>
+              sender() ! Ack
               applyTransactionStarted(event)
               applyTransactionStartedEventSideEffects(started)
             }
@@ -96,11 +105,17 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
         case _ =>
           if (!state.pendingConfirmed.contains(entityId)) {
             persist(started) { event =>
+              sender() ! Ack
               applyTransactionStarted(event)
               applyTransactionStartedEventSideEffects(started)
             }
           }
       }
+    case Retry =>
+      log.info(s"retrying commands for transactionId: ${state.transactionId}")
+      state.commands.diff(state.pendingConfirmed).foreach( c =>
+        getShardRegion(c.entityId) ! c
+      )
   }
 
   /**
@@ -112,9 +127,15 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
     case cleared @ TransactionCleared(_, entityId, _) =>
       if (!state.commitConfirmed.contains(entityId)) {
         persist(cleared) { event =>
+          sender() ! Ack
           applyTransactionCleared(event)
         }
       }
+    case Retry =>
+      log.info(s"retrying commands for transactionId: ${state.transactionId}")
+      state.commands.diff(state.pendingConfirmed).foreach( c =>
+        getShardRegion(c.entityId) ! c
+      )
   }
 
   /**
@@ -126,6 +147,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
     case reversed @ TransactionReversed(_, entityId, _) =>
       if (!state.rollbackConfirmed.contains(entityId)) {
         persist(reversed) { event =>
+          sender() ! Ack
           applyTransactionReversed(event)
         }
       }
@@ -146,10 +168,11 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
     log.info(s"starting new saga with transactionId: $transactionId")
 
     commands.foreach ( cmd =>
-      persistentEntityRegion ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
+      getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
     )
 
     conditionallySpinUpEventSubscriber(state.originalEventTag)
+    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
   }
 
   /**
@@ -188,7 +211,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
       context.become(committing)
 
       state.commands.foreach(cmd =>
-        persistentEntityRegion ! CommitTransaction(state.transactionId, cmd.entityId, state.originalEventTag)
+        getShardRegion(cmd.shardRegion) ! CommitTransaction(state.transactionId, cmd.entityId, state.originalEventTag)
       )
     }
     else if (rollbackCondition()) {
@@ -196,7 +219,8 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
       context.become(rollingBack)
 
       state.pendingConfirmed.foreach(entityId =>
-        persistentEntityRegion ! RollbackTransaction(state.transactionId, entityId, state.originalEventTag)
+        getShardRegion(state.commands.find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
+          state.transactionId, entityId, state.originalEventTag)
       )
     }
   }
@@ -209,6 +233,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
 
     if (completionCondition()) {
       log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
+      timers.cancel(TimerKey)
       context.stop(self)
     }
     else {
@@ -225,6 +250,7 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
 
     if (completionCondition()) {
       log.info(s"Saga completed with rollback for transactionId: ${state.transactionId}")
+      timers.cancel(TimerKey)
       context.stop(self)
     }
   }
@@ -287,4 +313,10 @@ class PersistentSagaActor(persistentEntityRegion: ActorRef, nodeEventTag: String
       }
     }
   }
+
+  /**
+    * Derive entity's shard region ActorSelection.
+    */
+  private def getShardRegion(regionName: String): ActorSelection =
+    context.actorSelection(s"/user/$regionName")
 }

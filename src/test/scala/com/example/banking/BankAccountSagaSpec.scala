@@ -28,6 +28,7 @@ object BankAccountSagaSpec {
       |akka.persistence.journal.leveldb.dir = "target/leveldb"
       |akka.persistence.snapshot-store.plugin = "akka.persistence.snapshot-store.local"
       |akka.persistence.snapshot-store.local.dir = "target/snapshots"
+      |akka-saga.bank-account.saga.retry-after = 5 minutes
     """.stripMargin
 }
 
@@ -99,7 +100,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
 
     "commit transaction when no exceptions" in {
       val TransactionId: TransactionId = "transactionId1000"
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
+      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
       val cmds = Seq(
         DepositFunds(Account11, 10),
@@ -138,7 +139,7 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       events22 = new ListBuffer[Any]()
       events33 = new ListBuffer[Any]()
       val TransactionId: TransactionId = "transactionId2000"
-      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
+      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
       val cmds = Seq(
         WithdrawFunds("accountNumber11", 11), // cause overdraft
@@ -169,5 +170,35 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       saga ! PoisonPill
       probe.expectTerminated(saga, timeout.duration)
     }
+
+//    "recover" in {
+//      TransactionId = "transactionId33"
+//      eventReceiver ! Reset
+//
+//      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+//
+//      val cmds = Seq(
+//        DepositFunds("accountNumber11", 50),
+//        DepositFunds("accountNumber22", 60),
+//        DepositFunds("accountNumber33", 70),
+//      )
+//
+//      saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
+//      val sagaProbe: TestProbe = TestProbe()
+//      sagaProbe.watch(saga)
+//
+//      sagaProbe.awaitCond(Await.result((saga ? GetSagaState)
+//        .mapTo[SagaState], timeout.duration).currentState == Complete,
+//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
+//
+//      saga ! PoisonPill
+//      sagaProbe.expectMsgClass(classOf[Terminated])
+//
+//      val saga2 = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
+//
+//      sagaProbe.awaitCond(Await.result((saga2 ? GetSagaState)
+//        .mapTo[SagaState], timeout.duration).currentState == Complete,
+//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
+//    }
   }
 }
