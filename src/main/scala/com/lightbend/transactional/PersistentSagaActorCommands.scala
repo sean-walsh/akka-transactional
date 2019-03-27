@@ -18,6 +18,7 @@ object PersistentSagaActorCommands {
   // Trait for any entity commands participating in a saga.
   trait TransactionalCommand {
     def entityId: EntityId
+    def shardRegion: String
   }
 
   // Transactional command wrappers.
