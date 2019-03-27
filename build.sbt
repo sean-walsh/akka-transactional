@@ -29,3 +29,7 @@ libraryDependencies ++= Seq(
 mainClass in Compile := Some("com.example.AkkaSagaApp")
 
 fork := true
+
+enablePlugins(AkkaGrpcPlugin)
+enablePlugins(JavaAgent)
+javaAgents += "org.mortbay.jetty.alpn" % "jetty-alpn-agent" % "2.0.9" % "runtime;test"
