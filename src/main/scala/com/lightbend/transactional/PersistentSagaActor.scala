@@ -64,7 +64,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     description: String,
     currentState: String,
     originalEventTag: String,
-    streamingSaga: Boolean,
+    streamingSaga: Boolean = false,
     streamingSagaEnded: Boolean = false,
     commands: Seq[TransactionalCommand] = Seq.empty,
     pendingConfirmed: Seq[PersistenceId] = Seq.empty,
@@ -86,7 +86,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     case StartSaga(transactionId, description, commands) =>
       persist(SagaStarted(transactionId, description, nodeEventTag, commands)) { started =>
         applySagaStarted(started)
-        applySagaStartedSideEffects(transactionId, commands)
+        applySagaStartedSideEffects(started)
         sender() ! Ack
       }
     case StartStreamingSaga(transactionId, description, add) =>
@@ -103,12 +103,8 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
             applySagaCommandAddedSideEffects(added)
       }
     case ReceiveTimeout =>
-      log.error(s"saga for saga ${self.path.name} never received StartSaga command.")
+      log.error(s"Aborting transaction ${self.path.name} never received StartSaga command.")
       context.stop(self)
-  }
-
-  def xor(x: SagaEvent): Unit ={
-
   }
 
   /**
@@ -140,6 +136,24 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       state.commands.diff(state.pendingConfirmed).foreach( c =>
         getShardRegion(c.entityId) ! c
       )
+  }
+
+  /**
+    * This is added to the pending receive to stream in commands.
+    */
+  private def withStreaming: Receive = {
+    case AddSagaCommand(transactionId, command) =>
+      persist(SagaCommandAdded(transactionId, command)) { added =>
+        sender() ! Ack
+        applySagaCommandAdded(added)
+        applySagaCommandAddedSideEffects(added)
+      }
+    case EndStreamingSaga(transactionId) =>
+      persist(StreamingSagaEnded(transactionId)) { ended =>
+        applyStreamingSagaEnded(ended)
+        applyStreamingSagaEndedSideEffects(ended)
+      }
+      sender() ! Ack
   }
 
   /**
@@ -185,75 +199,50 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       context.stop(self)
   }
 
-  /**
-    * Apply SagaStarted event.
-    */
   private def applySagaStarted(started: SagaStarted): Unit = {
-    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, true)
+    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag)
     context.become(pending)
   }
 
-  /**
-    * Apply SagaStarted event.
-    */
+  private def applySagaStartedSideEffects(started: SagaStarted): Unit = {
+    log.info(s"starting new saga with transactionId: ${started.transactionId}")
+
+    started.commands.foreach ( cmd =>
+      getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
+    )
+
+    conditionallySpinUpEventSubscriber(state.originalEventTag)
+    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
+  }
+
   private def applyStreamingSagaStarted(started: StreamingSagaStarted): Unit = {
-    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, started.commands)
-    context.become(pending.orElse {
-      case add @ AddSagaCommand(transactionId, command) =>
-        persist(SagaCommandAdded(transactionId, command)) { added =>
-          sender() ! Ack
-          applySagaCommandAdded(added)
-          applySagaCommandAddedSideEffects(added)
-        }
-      case EndStreamingSaga(_) =>
-    })
+    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, true)
+    context.become(pending.orElse(withStreaming))
   }
 
-  /**
-    * Apply SagaCommandAdded event.
-    */
-  private def applySagaCommandAdded(added: SagaCommandAdded): Unit = {
+  private def applyStreamingSagaStartedSideEffects(started: StreamingSagaStarted): Unit = {
+    log.info(s"starting new saga with transactionId: ${started.transactionId}")
+    conditionallySpinUpEventSubscriber(state.originalEventTag)
+    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
+  }
+
+  private def applySagaCommandAdded(added: SagaCommandAdded): Unit =
     state.copy(commands = state.commands :+ added.command)
+
+  private def applySagaCommandAddedSideEffects(added: SagaCommandAdded): Unit =
+    getShardRegion(added.command.shardRegion) ! StartTransaction(state.transactionId, added.command.entityId, state.originalEventTag, added.command)
+
+  private def applyStreamingSagaEnded(ended: StreamingSagaEnded): Unit = {
+    state = state.copy(streamingSagaEnded = true)
+
+    if (commitCondition())
+
   }
 
-  /**
-    * Apply EndStreamingSaga event.
-    */
-  private def applyEndStreamingSaga(end: EndStreamingSaga): Unit = {
+  private def applyStreamingSagaEndedSideEffects(ended: StreamingSagaEnded): Unit = {
 
   }
 
-  /**
-    * Side effects due to SagaStarted.
-    */
-  private def applySagaStartedSideEffects(transactionId: String, commands: Seq[TransactionalCommand]): Unit = {
-    log.info(s"starting new saga with transactionId: $transactionId")
-
-    commands.foreach ( cmd =>
-      getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
-    )
-
-    conditionallySpinUpEventSubscriber(state.originalEventTag)
-    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
-  }
-
-  /**
-    * Side effects due to StreamingSagaStarted.
-    */
-  private def applySagaStartedSideEffects(transactionId: String, commands: Seq[TransactionalCommand]): Unit = {
-    log.info(s"starting new saga with transactionId: $transactionId")
-
-    commands.foreach ( cmd =>
-      getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
-    )
-
-    conditionallySpinUpEventSubscriber(state.originalEventTag)
-    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
-  }
-
-  /**
-    * Apply TransactionStarted event.
-    */
   private def applyTransactionStarted(started: TransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
@@ -348,8 +337,8 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       applyTransactionCleared(cleared)
     case reversed: TransactionReversed =>
       applyTransactionReversed(reversed)
-    case end: EndStreamingSaga =>
-      applyEndStreamingSaga(end)
+    case ended: StreamingSagaEnded =>
+      applyStreamingSagaEnded(ended)
     case RecoveryCompleted =>
       if (state.currentState != Complete)
         conditionallySpinUpEventSubscriber(state.originalEventTag)
@@ -365,7 +354,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       false
 
   /**
-    * Checks and conditionally moves to rollback.
+    * Checks for rollback condition.
     */
   private def rollbackCondition(): Boolean =
     if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty)
@@ -374,7 +363,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       false
 
   /**
-    * Checks for completion.
+    * Checks for completion condition.
     */
   private def completionCondition(): Boolean =
     if (state.currentState == Committing && state.commitConfirmed.size == state.commands.size)
