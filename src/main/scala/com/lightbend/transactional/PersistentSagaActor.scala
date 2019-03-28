@@ -56,6 +56,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
 
   context.setReceiveTimeout(10.seconds)
 
+  final private val Uninitialized = "uninitialized"
   final private val Pending = "pending"
   final private val Committing = "committing"
   final private val RollingBack = "rollingBack"
@@ -74,7 +75,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     rollbackConfirmed: Seq[PersistenceId] = Seq.empty,
     exceptions: Seq[TransactionalEventEnvelope] = Seq.empty)
 
-  private var state: SagaState = null
+  private var state: SagaState = SagaState("", "", Uninitialized, "")
 
   override def receiveCommand: Receive = uninitialized
 
@@ -201,7 +202,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   }
 
   private def applySagaStarted(started: SagaStarted): Unit = {
-    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag)
+    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, false, false, started.commands)
     context.become(pending)
   }
 
@@ -327,26 +328,6 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     }
   }
 
-  final override def receiveRecover: Receive = {
-    case started: SagaStarted =>
-      applySagaStarted(started)
-    case started: TransactionStarted =>
-      applyTransactionStarted(started)
-    case streaming: StreamingSagaStarted =>
-      applyStreamingSagaStarted(streaming)
-    case added: SagaCommandAdded =>
-      applySagaCommandAdded(added)
-    case cleared: TransactionCleared =>
-      applyTransactionCleared(cleared)
-    case reversed: TransactionReversed =>
-      applyTransactionReversed(reversed)
-    case _: StreamingSagaEnded =>
-      applyStreamingSagaEnded()
-    case RecoveryCompleted =>
-      if (state.currentState != Complete)
-        conditionallySpinUpEventSubscriber(state.originalEventTag)
-  }
-
   /**
     * Checks and conditionally moves to rollback.
     */
@@ -405,4 +386,24 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     */
   private def getShardRegion(regionName: String): ActorSelection =
     context.actorSelection(s"/user/$regionName")
+
+  final override def receiveRecover: Receive = {
+    case started: SagaStarted =>
+      applySagaStarted(started)
+    case started: TransactionStarted =>
+      applyTransactionStarted(started)
+    case streaming: StreamingSagaStarted =>
+      applyStreamingSagaStarted(streaming)
+    case added: SagaCommandAdded =>
+      applySagaCommandAdded(added)
+    case cleared: TransactionCleared =>
+      applyTransactionCleared(cleared)
+    case reversed: TransactionReversed =>
+      applyTransactionReversed(reversed)
+    case _: StreamingSagaEnded =>
+      applyStreamingSagaEnded()
+    case RecoveryCompleted =>
+      if (state.currentState != Complete)
+        conditionallySpinUpEventSubscriber(state.originalEventTag)
+  }
 }
