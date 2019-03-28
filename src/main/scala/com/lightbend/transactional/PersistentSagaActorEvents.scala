@@ -10,7 +10,7 @@ object PersistentSagaActorEvents {
 
   /** Events on a saga **/
 
-  sealed trait SagaEvent {
+  trait SagaEvent {
     def transactionId: TransactionId
   }
   case class SagaStarted(transactionId: TransactionId, description: String, nodeEventTag: String,

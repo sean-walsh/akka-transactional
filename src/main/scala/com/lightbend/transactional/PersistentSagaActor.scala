@@ -45,12 +45,14 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   implicit def ec: ExecutionContext = context.system.dispatcher
   override def persistenceId: String = self.path.name
 
-  // How often to retry transaction subscription confirmations missing after a wait time.
-  private val retryAfter: FiniteDuration =
-    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
-
+  /**
+    * How often to retry transaction subscription confirmations missing after a wait time. The retry-after setting
+    * should be coarse enough to allow the same timer to be used across pending, committing and rollingBack.
+    */
   private case object Retry
   private case object TimerKey
+  private val retryAfter: FiniteDuration =
+    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
 
   context.setReceiveTimeout(10.seconds)
 
@@ -149,9 +151,8 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
         applySagaCommandAddedSideEffects(added)
       }
     case EndStreamingSaga(transactionId) =>
-      persist(StreamingSagaEnded(transactionId)) { ended =>
-        applyStreamingSagaEnded(ended)
-        applyStreamingSagaEndedSideEffects(ended)
+      persist(StreamingSagaEnded(transactionId)) { _ =>
+        applyStreamingSagaEnded()
       }
       sender() ! Ack
   }
@@ -232,15 +233,17 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   private def applySagaCommandAddedSideEffects(added: SagaCommandAdded): Unit =
     getShardRegion(added.command.shardRegion) ! StartTransaction(state.transactionId, added.command.entityId, state.originalEventTag, added.command)
 
-  private def applyStreamingSagaEnded(ended: StreamingSagaEnded): Unit = {
+  private def applyStreamingSagaEnded(): Unit = {
     state = state.copy(streamingSagaEnded = true)
 
-    if (commitCondition())
-
-  }
-
-  private def applyStreamingSagaEndedSideEffects(ended: StreamingSagaEnded): Unit = {
-
+    if (commitCondition()) {
+      state = state.copy(currentState = Committing)
+      context.become(committing)
+    }
+    else if (rollbackCondition()) {
+      state = state.copy(currentState = RollingBack)
+      context.become(rollingBack)
+    }
   }
 
   private def applyTransactionStarted(started: TransactionStarted): Unit = {
@@ -337,8 +340,8 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       applyTransactionCleared(cleared)
     case reversed: TransactionReversed =>
       applyTransactionReversed(reversed)
-    case ended: StreamingSagaEnded =>
-      applyStreamingSagaEnded(ended)
+    case _: StreamingSagaEnded =>
+      applyStreamingSagaEnded()
     case RecoveryCompleted =>
       if (state.currentState != Complete)
         conditionallySpinUpEventSubscriber(state.originalEventTag)
@@ -348,8 +351,11 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Checks and conditionally moves to rollback.
     */
   private def commitCondition(): Boolean =
-    if (state.pendingConfirmed.size == state.commands.size && state.exceptions.isEmpty)
+    if (state.pendingConfirmed.size == state.commands.size && state.exceptions.isEmpty && !state.streamingSaga)
       true
+    else if (state.pendingConfirmed.size == state.commands.size && state.exceptions.isEmpty && state.streamingSaga
+      && state.streamingSagaEnded)
+       true
     else
       false
 
@@ -357,8 +363,12 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Checks for rollback condition.
     */
   private def rollbackCondition(): Boolean =
-    if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty)
-      true
+    if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty
+      && !state.streamingSaga)
+       true
+    else if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty
+      && state.streamingSaga && state.streamingSagaEnded)
+       true
     else
       false
 
