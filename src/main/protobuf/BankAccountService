@@ -1,16 +1,1 @@
 syntax = "proto3";
-
-option java_multiple_files = true;
-option java_package = "com.example.banking.grpc";
-option java_outer_classname = "BankAccountProto";
-
-package bankaccount;
-
-service BankAccountService {
-    // Sends a greeting
-    rpc StartTransaction (StartTransactionRequest) returns (StartTransactionResponse) {}
-}
-
-message StartTransactionRequest {
-    string name = 1;
-}

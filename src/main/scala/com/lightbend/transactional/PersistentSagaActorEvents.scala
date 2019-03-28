@@ -1,6 +1,6 @@
 package com.lightbend.transactional
 
-import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentSagaActorCommands.{AddSagaCommand, TransactionalCommand}
 import com.lightbend.transactional.lightbend.{EntityId, TransactionId}
 
 /**
@@ -8,11 +8,17 @@ import com.lightbend.transactional.lightbend.{EntityId, TransactionId}
   */
 object PersistentSagaActorEvents {
 
-  /** Events upon a saga **/
-  case class SagaStarted(transactionId: TransactionId, description: String, nodeEventTag: String,
-                         commands: Seq[TransactionalCommand])
+  /** Events on a saga **/
 
-  /** Events from entities **/
+  sealed trait SagaEvent {
+    def transactionId: TransactionId
+  }
+  case class SagaStarted(transactionId: TransactionId, description: String, nodeEventTag: String,
+                         commands: Seq[TransactionalCommand]) extends SagaEvent
+  case class StreamingSagaStarted(transactionId: TransactionId, description: String, nodeEventTag: String) extends SagaEvent
+  case class SagaCommandAdded(transactionId: TransactionId, command: TransactionalCommand) extends SagaEvent
+
+  /** Events on entities **/
   // Envelope to wrap events.
   trait TransactionalEventEnvelope {
     def transactionId: TransactionId

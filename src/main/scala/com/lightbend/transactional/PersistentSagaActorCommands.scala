@@ -8,10 +8,15 @@ import com.lightbend.transactional.lightbend.{EntityId, TransactionId}
 object PersistentSagaActorCommands {
 
   /** Commands sent to a saga. **/
+
   sealed trait PersistentSagaActorCommand
+  // Adds new command upon and entity participating in a transaction.
   case class StartSaga(transactionId: TransactionId, description: String, commands: Seq[TransactionalCommand])
     extends PersistentSagaActorCommand
-  case object GetSagaState extends PersistentSagaActorCommand
+  case class AddSagaCommand(transactionId: TransactionId, command: TransactionalCommand) extends PersistentSagaActorCommand
+  case class StartStreamingSaga(transactionId: TransactionId, description: String, initialCommand: AddSagaCommand)
+    extends PersistentSagaActorCommand
+  case class EndStreamingSaga(transactionId: TransactionId)
 
   /** Commands sent to entities **/
 
