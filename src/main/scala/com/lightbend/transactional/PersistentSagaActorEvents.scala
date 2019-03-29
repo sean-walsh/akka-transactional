@@ -7,24 +7,30 @@ import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalComm
   */
 object PersistentSagaActorEvents {
 
-  /** Events on a saga **/
-
   trait SagaEvent {
-    def transactionId: String
-  }
-  case class SagaStarted(transactionId: String, description: String, nodeEventTag: String,
-                         commands: Seq[TransactionalCommand]) extends SagaEvent
-  case class StreamingSagaStarted(transactionId: String, description: String, nodeEventTag: String) extends SagaEvent
-  case class SagaCommandAdded(transactionId: String, command: TransactionalCommand) extends SagaEvent
-  case class StreamingSagaEnded(transactionId: String)
-  case class SagaTransactionComplete(transactionId: String) extends SagaEvent
-
-  /** Events on entities **/
-  // Envelope to wrap events.
-  trait TransactionalEventEnvelope {
     def transactionId: String
     def entityId: String
   }
+
+  /** Events on a saga **/
+  case class SagaTransactionStarted(transactionId: String, description: String, nodeEventTag: String,
+                                    commands: Seq[TransactionalCommand]) extends SagaEvent {
+    override val entityId = transactionId
+  }
+  case class StreamingSagaStarted(transactionId: String, description: String, nodeEventTag: String) extends SagaEvent {
+    override val entityId = transactionId
+  }
+  case class SagaCommandAdded(transactionId: String, command: TransactionalCommand, sequence: Long) extends SagaEvent {
+    override val entityId = transactionId
+  }
+  case class StreamingSagaEnded(transactionId: String)
+  case class SagaTransactionComplete(transactionId: String) extends SagaEvent {
+    override val entityId = transactionId
+  }
+
+  /** Events on entities **/
+  // Envelope to wrap events.
+  trait TransactionalEventEnvelope extends SagaEvent
 
   // Transactional event wrappers.
   case class TransactionStarted(transactionId: String, entityId: String, eventTag: String, event: TransactionalEvent)

@@ -33,6 +33,7 @@ object PersistentSagaActor {
     originalEventTag: String,
     streamingSaga: Boolean = false,
     streamingSagaEnded: Boolean = false,
+    streamingSequenceNum: Long = 0L,
     commands: Seq[TransactionalCommand] = Seq.empty,
     pendingConfirmed: Seq[String] = Seq.empty,
     commitConfirmed: Seq[String] = Seq.empty,
@@ -95,7 +96,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     */
   private def uninitialized: Receive = {
     case StartSaga(transactionId, description, commands) =>
-      persist(SagaStarted(transactionId, description, nodeEventTag, commands)) { started =>
+      persist(SagaTransactionStarted(transactionId, description, nodeEventTag, commands)) { started =>
         applySagaStarted(started)
         applySagaStartedSideEffects(started)
         sender() ! Ack
@@ -104,7 +105,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       import collection.immutable._
       persistAll(Seq(
         StreamingSagaStarted(transactionId, description, nodeEventTag),
-        SagaCommandAdded(transactionId, add.command))) {
+        SagaCommandAdded(transactionId, add.command, add.sequence))) {
           case started: StreamingSagaStarted =>
             sender() ! Ack
             applyStreamingSagaStarted(started)
@@ -146,28 +147,26 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       }
     case Retry =>
       log.info(s"retrying commands for transactionId: ${state.transactionId}")
-      state.commands.diff(state.pendingConfirmed).foreach(c =>
+      state.commands.diff(state.pendingConfirmed).foreach( c =>
         getShardRegion(c.entityId) ! c
       )
-    case GetSagaState =>
-      sender() ! state
-  }
-
-  /**
-    * This is added to the pending receive to stream in commands.
-    */
-  private def withStreaming: Receive = {
-    case AddSagaCommand(transactionId, command) =>
-      persist(SagaCommandAdded(transactionId, command)) { added =>
-        sender() ! Ack
-        applySagaCommandAdded(added)
-        applySagaCommandAddedSideEffects(added)
+    case AddSagaCommand(transactionId, command, sequence) =>
+      if (sequence - state.streamingSequenceNum == 1)
+        persist(SagaCommandAdded(transactionId, command, sequence)) { added =>
+          sender() ! Ack
+          applySagaCommandAdded(added)
+          applySagaCommandAddedSideEffects(added)
+        }
+      else {
+        log.info(s"ending transaction ${state.transactionId} due to command out of sequence.")
       }
     case EndStreamingSaga(transactionId) =>
       persist(StreamingSagaEnded(transactionId)) { _ =>
         applyStreamingSagaEnded()
       }
       sender() ! Ack
+    case GetSagaState =>
+      sender() ! state
   }
 
   /**
@@ -185,7 +184,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       }
     case Retry =>
       log.info(s"retrying commands for transactionId: ${state.transactionId}")
-      state.commands.diff(state.pendingConfirmed).foreach(c =>
+      state.commands.diff(state.pendingConfirmed).foreach( c =>
         getShardRegion(c.entityId) ! c
       )
     case GetSagaState =>
@@ -209,15 +208,15 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       sender() ! state
   }
 
-  private def applySagaStarted(started: SagaStarted): Unit = {
-    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, false, false, started.commands)
+  private def applySagaStarted(started: SagaTransactionStarted): Unit = {
+    state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, false, false, 0L, started.commands)
     context.become(pending)
   }
 
-  private def applySagaStartedSideEffects(started: SagaStarted): Unit = {
+  private def applySagaStartedSideEffects(started: SagaTransactionStarted): Unit = {
     log.info(s"starting new saga with transactionId: ${started.transactionId}")
 
-    started.commands.foreach(cmd =>
+    started.commands.foreach( cmd =>
       getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
     )
 
@@ -227,7 +226,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
 
   private def applyStreamingSagaStarted(started: StreamingSagaStarted): Unit = {
     state = SagaState(started.transactionId, started.description, Pending, started.nodeEventTag, true)
-    context.become(pending.orElse(withStreaming))
+    context.become(pending)
   }
 
   private def applyStreamingSagaStartedSideEffects(started: StreamingSagaStarted): Unit = {
@@ -236,8 +235,9 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
   }
 
-  private def applySagaCommandAdded(added: SagaCommandAdded): Unit =
-    state.copy(commands = state.commands :+ added.command)
+  private def applySagaCommandAdded(added: SagaCommandAdded): Unit = {
+    state.copy(commands = state.commands :+ added.command, streamingSequenceNum = added.sequence)
+  }
 
   private def applySagaCommandAddedSideEffects(added: SagaCommandAdded): Unit =
     getShardRegion(added.command.shardRegion) ! StartTransaction(state.transactionId, added.command.entityId, state.originalEventTag, added.command)
@@ -284,12 +284,12 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     }
 
     if (state.currentState == Committing) {
-      state.commands.foreach(cmd =>
+      state.commands.foreach( cmd =>
         getShardRegion(cmd.shardRegion) ! CommitTransaction(state.transactionId, cmd.entityId, state.originalEventTag)
       )
     }
     else if (state.currentState == RollingBack) {
-      state.pendingConfirmed.foreach(entityId =>
+      state.pendingConfirmed.foreach( entityId =>
         getShardRegion(state.commands.find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
           state.transactionId, entityId, state.originalEventTag)
       )
@@ -387,7 +387,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     context.actorSelection(s"/user/$regionName")
 
   final override def receiveRecover: Receive = {
-    case started: SagaStarted =>
+    case started: SagaTransactionStarted =>
       applySagaStarted(started)
     case started: TransactionStarted =>
       applyTransactionStarted(started)

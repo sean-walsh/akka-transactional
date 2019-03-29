@@ -8,10 +8,10 @@ object PersistentSagaActorCommands {
   /** Commands sent to a saga. **/
 
   sealed trait PersistentSagaActorCommand
-  // Adds new command upon and entity participating in a transaction.
   case class StartSaga(transactionId: String, description: String, commands: Seq[TransactionalCommand])
     extends PersistentSagaActorCommand
-  case class AddSagaCommand(transactionId: String, command: TransactionalCommand) extends PersistentSagaActorCommand
+  case class AddSagaCommand(transactionId: String, command: TransactionalCommand, sequence: Long)
+    extends PersistentSagaActorCommand
   case class StartStreamingSaga(transactionId: String, description: String, initialCommand: AddSagaCommand)
     extends PersistentSagaActorCommand
   case class EndStreamingSaga(transactionId: String)
