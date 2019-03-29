@@ -12,7 +12,6 @@ import akka.pattern.ask
 import akka.util.Timeout
 import spray.json._
 import BankAccountCommands._
-import com.example.banking.bankaccount.AccountNumber
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -25,12 +24,12 @@ case class StartBankAccountTransaction(deposits: Seq[DepositFundsDto], withdrawa
 /**
   * A DTO for WithdrawFunds.
   */
-case class DepositFundsDto(accountNumber: AccountNumber, amount: BigDecimal)
+case class DepositFundsDto(accountNumber: String, amount: BigDecimal)
 
 /**
   * A DTO for WithdrawFunds.
   */
-case class WithdrawFundsDto(accountNumber: AccountNumber, amount: BigDecimal)
+case class WithdrawFundsDto(accountNumber: String, amount: BigDecimal)
 
 /**
   * Json support for BankAccountHttpRoutes.

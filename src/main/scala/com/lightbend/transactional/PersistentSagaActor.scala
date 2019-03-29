@@ -3,7 +3,8 @@ package com.lightbend.transactional
 import akka.actor.{ActorLogging, ActorNotFound, ActorSelection, Props, ReceiveTimeout, Timers}
 import akka.persistence.{PersistentActor, RecoveryCompleted}
 import akka.util.Timeout
-import com.lightbend.transactional.lightbend.PersistenceId
+import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -21,6 +22,24 @@ object PersistentSagaActor {
     * Use this for asks between saga and entities.
     */
   case class Ack()
+
+  /**
+    * This would normally be kept private, but due to the complexity here, it's useful for testing.
+    */
+  case class SagaState(
+    transactionId: String,
+    description: String,
+    currentState: String,
+    originalEventTag: String,
+    streamingSaga: Boolean = false,
+    streamingSagaEnded: Boolean = false,
+    commands: Seq[TransactionalCommand] = Seq.empty,
+    pendingConfirmed: Seq[String] = Seq.empty,
+    commitConfirmed: Seq[String] = Seq.empty,
+    rollbackConfirmed: Seq[String] = Seq.empty,
+    exceptions: Seq[TransactionalEventEnvelope] = Seq.empty)
+
+  case object GetSagaState
 
   /**
     * Props factory method.
@@ -43,6 +62,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   import PersistentSagaActorEvents._
 
   implicit def ec: ExecutionContext = context.system.dispatcher
+
   override def persistenceId: String = self.path.name
 
   /**
@@ -50,7 +70,9 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * should be coarse enough to allow the same timer to be used across pending, committing and rollingBack.
     */
   private case object Retry
+
   private case object TimerKey
+
   private val retryAfter: FiniteDuration =
     context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
 
@@ -60,20 +82,6 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   final private val Pending = "pending"
   final private val Committing = "committing"
   final private val RollingBack = "rollingBack"
-  final private val Complete = "complete"
-
-  private case class SagaState(
-    transactionId: String,
-    description: String,
-    currentState: String,
-    originalEventTag: String,
-    streamingSaga: Boolean = false,
-    streamingSagaEnded: Boolean = false,
-    commands: Seq[TransactionalCommand] = Seq.empty,
-    pendingConfirmed: Seq[PersistenceId] = Seq.empty,
-    commitConfirmed: Seq[PersistenceId] = Seq.empty,
-    rollbackConfirmed: Seq[PersistenceId] = Seq.empty,
-    exceptions: Seq[TransactionalEventEnvelope] = Seq.empty)
 
   private var state: SagaState = SagaState("", "", Uninitialized, "")
 
@@ -108,6 +116,8 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     case ReceiveTimeout =>
       log.error(s"Aborting transaction ${self.path.name} never received StartSaga command.")
       context.stop(self)
+    case GetSagaState =>
+      sender() ! state
   }
 
   /**
@@ -115,7 +125,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Here we receive event subscription messages applicable to "pending".
     */
   private def pending: Receive = {
-    case started @ TransactionStarted(_, entityId, _, _) =>
+    case started@TransactionStarted(_, entityId, _, _) =>
       started.event match {
         case _: TransactionalExceptionEvent =>
           if (!state.exceptions.exists(_.entityId == entityId)) {
@@ -136,9 +146,11 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       }
     case Retry =>
       log.info(s"retrying commands for transactionId: ${state.transactionId}")
-      state.commands.diff(state.pendingConfirmed).foreach( c =>
+      state.commands.diff(state.pendingConfirmed).foreach(c =>
         getShardRegion(c.entityId) ! c
       )
+    case GetSagaState =>
+      sender() ! state
   }
 
   /**
@@ -164,7 +176,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Here we receive messages from the entities applicable to "committing".
     */
   private def committing: Receive = {
-    case cleared @ TransactionCleared(_, entityId, _) =>
+    case cleared@TransactionCleared(_, entityId, _) =>
       if (!state.commitConfirmed.contains(entityId)) {
         persist(cleared) { event =>
           sender() ! Ack
@@ -173,9 +185,11 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       }
     case Retry =>
       log.info(s"retrying commands for transactionId: ${state.transactionId}")
-      state.commands.diff(state.pendingConfirmed).foreach( c =>
+      state.commands.diff(state.pendingConfirmed).foreach(c =>
         getShardRegion(c.entityId) ! c
       )
+    case GetSagaState =>
+      sender() ! state
   }
 
   /**
@@ -184,21 +198,15 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case reversed @ TransactionReversed(_, entityId, _) =>
+    case reversed@TransactionReversed(_, entityId, _) =>
       if (!state.rollbackConfirmed.contains(entityId)) {
         persist(reversed) { event =>
           sender() ! Ack
           applyTransactionReversed(event)
         }
       }
-  }
-
-  /**
-    * Stick around for a bit, useful for testing.
-    */
-  private def complete: Receive = {
-    case ReceiveTimeout =>
-      context.stop(self)
+    case GetSagaState =>
+      sender() ! state
   }
 
   private def applySagaStarted(started: SagaStarted): Unit = {
@@ -209,7 +217,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   private def applySagaStartedSideEffects(started: SagaStarted): Unit = {
     log.info(s"starting new saga with transactionId: ${started.transactionId}")
 
-    started.commands.foreach ( cmd =>
+    started.commands.foreach(cmd =>
       getShardRegion(cmd.shardRegion) ! StartTransaction(state.transactionId, cmd.entityId, state.originalEventTag, cmd)
     )
 
@@ -250,9 +258,9 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
   private def applyTransactionStarted(started: TransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
-        state = state.copy(exceptions = state.exceptions :+ started)
+        state = state.copy(exceptions = (state.exceptions :+ started).sortWith(_.entityId < _.entityId))
       case _ =>
-        state = state.copy(pendingConfirmed = state.pendingConfirmed :+ started.entityId)
+        state = state.copy(pendingConfirmed = (state.pendingConfirmed :+ started.entityId).sortWith(_ < _))
     }
 
     if (commitCondition()) {
@@ -275,18 +283,12 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       case _ =>
     }
 
-    if (commitCondition()) {
-      state = state.copy(currentState = Committing)
-      context.become(committing)
-
+    if (state.currentState == Committing) {
       state.commands.foreach(cmd =>
         getShardRegion(cmd.shardRegion) ! CommitTransaction(state.transactionId, cmd.entityId, state.originalEventTag)
       )
     }
-    else if (rollbackCondition()) {
-      state = state.copy(currentState = RollingBack)
-      context.become(rollingBack)
-
+    else if (state.currentState == RollingBack) {
       state.pendingConfirmed.foreach(entityId =>
         getShardRegion(state.commands.find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
           state.transactionId, entityId, state.originalEventTag)
@@ -298,14 +300,14 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Apply TransactionCleared event.
     */
   private def applyTransactionCleared(event: TransactionCleared): Unit = {
-    state = state.copy(commitConfirmed = state.commitConfirmed :+ event.entityId)
+    state = state.copy(commitConfirmed = (state.commitConfirmed :+ event.entityId).sortWith(_ < _))
 
     if (completionCondition()) {
-      log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
-      state.copy(currentState = Complete)
-      context.setReceiveTimeout(1.minute)
-      context.become(complete)
-      timers.cancel(TimerKey)
+      persist(SagaTransactionComplete(state.transactionId)) { _ =>
+        log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
+        timers.cancel(TimerKey)
+        context.stop(self)
+      }
     }
     else {
       state = state.copy(currentState = Committing)
@@ -317,14 +319,14 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Apply TransactionReversed event.
     */
   private def applyTransactionReversed(event: TransactionReversed): Unit = {
-    state = state.copy(rollbackConfirmed = state.rollbackConfirmed :+ event.entityId)
+    state = state.copy(rollbackConfirmed = (state.rollbackConfirmed :+ event.entityId).sortWith(_ < _))
 
     if (completionCondition()) {
-      log.info(s"Saga completed with rollback for transactionId: ${state.transactionId}")
-      state.copy(currentState = Complete)
-      context.setReceiveTimeout(1.minute)
-      context.become(complete)
-      timers.cancel(TimerKey)
+      persist(SagaTransactionComplete(state.transactionId)) { _ =>
+        log.info(s"Saga completed with rollback for transactionId: ${state.transactionId}")
+        timers.cancel(TimerKey)
+        context.stop(self)
+      }
     }
   }
 
@@ -336,7 +338,7 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       true
     else if (state.pendingConfirmed.size == state.commands.size && state.exceptions.isEmpty && state.streamingSaga
       && state.streamingSagaEnded)
-       true
+      true
     else
       false
 
@@ -344,25 +346,22 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
     * Checks for rollback condition.
     */
   private def rollbackCondition(): Boolean =
-    if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty
-      && !state.streamingSaga)
-       true
-    else if (state.commands.size == state.pendingConfirmed.size + state.exceptions.size && !state.exceptions.isEmpty
-      && state.streamingSaga && state.streamingSagaEnded)
-       true
+    if (!state.exceptions.isEmpty && state.commands.size == state.pendingConfirmed.size + state.exceptions.size)
+      true
     else
       false
 
   /**
     * Checks for completion condition.
     */
-  private def completionCondition(): Boolean =
+  private def completionCondition(): Boolean = {
     if (state.currentState == Committing && state.commitConfirmed.size == state.commands.size)
       true
-    else if (state.currentState == RollingBack && state.rollbackConfirmed.size == state.commands.size + state.exceptions.size)
+    else if (state.currentState == RollingBack && state.rollbackConfirmed.size == state.commands.size - state.exceptions.size)
       true
     else
       false
+  }
 
   /**
     * In the case that this saga has restarted on or been moved to another node, will ensure that there is an event
@@ -402,8 +401,10 @@ class PersistentSagaActor(nodeEventTag: String) extends Timers with PersistentAc
       applyTransactionReversed(reversed)
     case _: StreamingSagaEnded =>
       applyStreamingSagaEnded()
+    case _: SagaTransactionComplete =>
+      context.stop(self)
     case RecoveryCompleted =>
-      if (state.currentState != Complete)
+      if (List(Pending, Committing, RollingBack).contains(state.currentState))
         conditionallySpinUpEventSubscriber(state.originalEventTag)
   }
 }

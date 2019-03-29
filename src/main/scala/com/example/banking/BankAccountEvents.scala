@@ -1,6 +1,5 @@
 package com.example.banking
 
-import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorEvents.{TransactionalEvent, TransactionalExceptionEvent}
 
 /**
@@ -8,17 +7,17 @@ import com.lightbend.transactional.PersistentSagaActorEvents.{TransactionalEvent
   */
 object BankAccountEvents {
 
-  case class BankAccountCreated(customerId: String, accountNumber: AccountNumber) extends BankAccountEvent
+  case class BankAccountCreated(customerId: String, accountNumber: String) extends BankAccountEvent
 
-  case class FundsDeposited(accountNumber: AccountNumber, amount: BigDecimal) extends BankAccountTransactionalEvent
+  case class FundsDeposited(accountNumber: String, amount: BigDecimal) extends BankAccountTransactionalEvent
 
-  case class FundsWithdrawn(accountNumber: AccountNumber, amount: BigDecimal) extends BankAccountTransactionalEvent
+  case class FundsWithdrawn(accountNumber: String, amount: BigDecimal) extends BankAccountTransactionalEvent
 
-  case class InsufficientFunds(accountNumber: AccountNumber, balance: BigDecimal, attemptedWithdrawal: BigDecimal)
+  case class InsufficientFunds(accountNumber: String, balance: BigDecimal, attemptedWithdrawal: BigDecimal)
     extends BankAccountTransactionalExceptionEvent
 
   sealed trait BankAccountEvent {
-    def accountNumber: AccountNumber
+    def accountNumber: String
   }
 
   trait BankAccountTransactionalEvent extends BankAccountEvent with TransactionalEvent {

@@ -1,7 +1,5 @@
 package com.lightbend.transactional
 
-import com.lightbend.transactional.lightbend.{EntityId, TransactionId}
-
 /**
   * Wrapping "Envelope" commands to be handled by entities participating in a saga.
   */
@@ -11,31 +9,31 @@ object PersistentSagaActorCommands {
 
   sealed trait PersistentSagaActorCommand
   // Adds new command upon and entity participating in a transaction.
-  case class StartSaga(transactionId: TransactionId, description: String, commands: Seq[TransactionalCommand])
+  case class StartSaga(transactionId: String, description: String, commands: Seq[TransactionalCommand])
     extends PersistentSagaActorCommand
-  case class AddSagaCommand(transactionId: TransactionId, command: TransactionalCommand) extends PersistentSagaActorCommand
-  case class StartStreamingSaga(transactionId: TransactionId, description: String, initialCommand: AddSagaCommand)
+  case class AddSagaCommand(transactionId: String, command: TransactionalCommand) extends PersistentSagaActorCommand
+  case class StartStreamingSaga(transactionId: String, description: String, initialCommand: AddSagaCommand)
     extends PersistentSagaActorCommand
-  case class EndStreamingSaga(transactionId: TransactionId)
+  case class EndStreamingSaga(transactionId: String)
 
   /** Commands sent to entities **/
 
   // Trait for any entity commands participating in a saga.
   trait TransactionalCommand {
-    def entityId: EntityId
+    def entityId: String
     def shardRegion: String
   }
 
   // Transactional command wrappers.
   sealed trait TransactionalCommandWrapper {
     def transactionId: String
-    def entityId: EntityId
+    def entityId: String
   }
 
-  case class StartTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String,
+  case class StartTransaction(transactionId: String, entityId: String, eventTag: String,
                               command: TransactionalCommand) extends TransactionalCommandWrapper
-  case class CommitTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String)
+  case class CommitTransaction(transactionId: String, entityId: String, eventTag: String)
     extends TransactionalCommandWrapper
-  case class RollbackTransaction(transactionId: TransactionId, entityId: EntityId, eventTag: String)
+  case class RollbackTransaction(transactionId: String, entityId: String, eventTag: String)
     extends TransactionalCommandWrapper
 }

@@ -83,8 +83,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   /**
     * Create Akka Http Server
-    *
-    * @return BankAccountHttpServer
     */
   private def createHttpServer(): BankAccountHttpServer = {
     implicit val timeout: Timeout = Timeout(5.seconds)

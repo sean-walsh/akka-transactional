@@ -1,6 +1,5 @@
-package com.example.banking
+package com.example.banking.anomaly
 
-import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalExceptionEvent
 
 /**
@@ -8,11 +7,11 @@ import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalExcept
   */
 object BankAccountAnomalyEvents {
 
-  case class WithdrawalExceedsDailyLimit(accountNumber: AccountNumber, attemptedWithdrawal: BigDecimal)
+  case class WithdrawalExceedsDailyLimit(accountNumber: String, attemptedWithdrawal: BigDecimal)
     extends BankAccountAnomalyExceptionEvent
 
   sealed trait BankAccountEvent {
-    def accountNumber: AccountNumber
+    def accountNumber: String
   }
 
   trait BankAccountAnomalyExceptionEvent extends TransactionalExceptionEvent with BankAccountEvent

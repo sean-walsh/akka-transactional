@@ -2,7 +2,6 @@ package com.example.banking
 
 import akka.actor.Props
 import akka.persistence.journal.Tagged
-import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActor.Ack
 import com.lightbend.transactional.TransactionalEntity
 import com.lightbend.transactional.PersistentSagaActorCommands._
@@ -19,7 +18,7 @@ case object BankAccountActor {
 
   // To query bank account balance.
   case class Balance(pendingBalance: BigDecimal, balance: BigDecimal)
-  case class GetBalance(accountNumber: AccountNumber)
+  case class GetBalance(accountNumber: String)
 
   /**
     * Factory method for BankAccount actor.

@@ -1,8 +1,6 @@
 package com.example.banking
 
-import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
-import com.lightbend.transactional.lightbend.EntityId
 
 /**
   * Commands handled by a bank account.
@@ -19,15 +17,15 @@ object BankAccountCommands {
     override val shardRegion = BankAccountActor.RegionName
   }
 
-  case class CreateBankAccount(customerId: String, accountNumber: AccountNumber) extends BankAccountCommand
+  case class CreateBankAccount(customerId: String, accountNumber: String) extends BankAccountCommand
 
-  case class DepositFunds(accountNumber: AccountNumber, amount: BigDecimal)
+  case class DepositFunds(accountNumber: String, amount: BigDecimal)
     extends BankAccountTransactionalCommand {
-    override val entityId: EntityId = accountNumber
+    override val entityId: String = accountNumber
   }
 
-  case class WithdrawFunds(accountNumber: AccountNumber, amount: BigDecimal)
+  case class WithdrawFunds(accountNumber: String, amount: BigDecimal)
     extends BankAccountTransactionalCommand {
-    override val entityId: EntityId = accountNumber
+    override val entityId: String = accountNumber
   }
 }

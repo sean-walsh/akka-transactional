@@ -11,7 +11,6 @@ import akka.util.Timeout
 import com.lightbend.transactional.{NodeTaggedEventSubscription, PersistentSagaActor, TaggedEventSubscription}
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
-import com.lightbend.transactional.lightbend.TransactionId
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -99,8 +98,16 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
     bankAccountRegion ! CreateBankAccount(CustomerId, Account33)
 
     "commit transaction when no exceptions" in {
-      val TransactionId: TransactionId = "transactionId1000"
-      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
+      val TransactionId = "transactionId1000"
+
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(s"${PersistentSagaActor.EntityPrefix}$TransactionId",
+        0L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }(ActorMaterializer()(system))
+
+      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag),
+        s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
       val cmds = Seq(
         DepositFunds(Account11, 10),
@@ -125,9 +132,17 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
         TransactionCleared(TransactionId, Account33, nodeEventTag),
       )
 
-      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents11 not received for $Account11.")
-      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents22 not received for $Account22.")
-      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents33 not received for $Account33.")
+      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents11 not received for $Account11.")
+      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents22 not received for $Account22.")
+      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents33 not received for $Account33.")
+
+      Thread.sleep(500) // TODO: get rid of sleep and assert sorted events on the saga only, no need to assert on entity events as well.
+      awaitCond(events.last.asInstanceOf[SagaTransactionComplete] == SagaTransactionComplete(TransactionId),
+        timeout.duration, 100.milliseconds, "SagaTransactionComplete not received")
+
       val probe = TestProbe()
       probe.watch(saga)
       saga ! PoisonPill
@@ -138,8 +153,17 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
       events11 = new ListBuffer[Any]()
       events22 = new ListBuffer[Any]()
       events33 = new ListBuffer[Any]()
-      val TransactionId: TransactionId = "transactionId2000"
-      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag), s"${PersistentSagaActor.EntityPrefix}$TransactionId")
+
+      val TransactionId: String = "transactionId2000"
+
+      val events: ListBuffer[Any] = new ListBuffer[Any]()
+      readJournal.eventsByPersistenceId(s"${PersistentSagaActor.EntityPrefix}$TransactionId",
+        0L, Long.MaxValue).map(_.event).runForeach {
+        case x => events += x
+      }(ActorMaterializer()(system))
+
+      val saga = system.actorOf(PersistentSagaActor.props(nodeEventTag),
+        s"${PersistentSagaActor.EntityPrefix}$TransactionId")
 
       val cmds = Seq(
         WithdrawFunds("accountNumber11", 11), // cause overdraft
@@ -162,43 +186,25 @@ class BankAccountSagaSpec extends TestKit(ActorSystem("BankAccountSagaSpec", Con
         TransactionReversed(TransactionId, Account33, nodeEventTag),
       )
 
-      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents11 not received for $Account11.")
-      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents22 not received for $Account22.")
-      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents33 not received for $Account33.")
+      awaitCond(ExpectedEvents11 == events11, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents11 not received for $Account11.")
+      awaitCond(ExpectedEvents22 == events22, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents22 not received for $Account22.")
+      awaitCond(ExpectedEvents33 == events33, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents33 not received for $Account33.")
+
+      Thread.sleep(500) // TODO: get rid of sleep and assert sorted events on the saga only, no need to assert on entity events as well.
+      awaitCond(events.last.asInstanceOf[SagaTransactionComplete] == SagaTransactionComplete(TransactionId),
+        timeout.duration, 100.milliseconds, "SagaTransactionComplete not received")
+
       val probe = TestProbe()
       probe.watch(saga)
       saga ! PoisonPill
       probe.expectTerminated(saga, timeout.duration)
     }
 
-//    "recover" in {
-//      TransactionId = "transactionId33"
-//      eventReceiver ! Reset
-//
-//      val saga = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
-//
-//      val cmds = Seq(
-//        DepositFunds("accountNumber11", 50),
-//        DepositFunds("accountNumber22", 60),
-//        DepositFunds("accountNumber33", 70),
-//      )
-//
-//      saga ! StartSaga(TransactionId, "bank-account-saga", cmds)
-//      val sagaProbe: TestProbe = TestProbe()
-//      sagaProbe.watch(saga)
-//
-//      sagaProbe.awaitCond(Await.result((saga ? GetSagaState)
-//        .mapTo[SagaState], timeout.duration).currentState == Complete,
-//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
-//
-//      saga ! PoisonPill
-//      sagaProbe.expectMsgClass(classOf[Terminated])
-//
-//      val saga2 = system.actorOf(PersistentSagaActor.props(bankAccountRegion, eventSubscriber), TransactionId)
-//
-//      sagaProbe.awaitCond(Await.result((saga2 ? GetSagaState)
-//        .mapTo[SagaState], timeout.duration).currentState == Complete,
-//        timeout.duration, 100.milliseconds, s"Expected state of $Complete not reached.")
-//    }
+    "recover with incomplete saga state" in {
+
+    }
   }
 }

@@ -49,7 +49,8 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
       }
 
     case RollbackTransaction(transactionId, entityId, eventTag) =>
-      persist(TransactionReversed(transactionId, entityId, eventTag)) { reversed =>
+      val reversed = TransactionReversed(transactionId, entityId, eventTag)
+      persist(Tagged(reversed, Set(eventTag))) { _ =>
         onTransactionReversed(reversed)
       }
 

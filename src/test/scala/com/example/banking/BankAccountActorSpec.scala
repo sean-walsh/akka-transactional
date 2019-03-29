@@ -7,7 +7,6 @@ import akka.stream.ActorMaterializer
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
 import com.example.banking.BankAccountActor.{Balance, GetBalance}
-import com.example.banking.bankaccount.AccountNumber
 import com.lightbend.transactional.PersistentSagaActorCommands._
 import com.lightbend.transactional.PersistentSagaActorEvents._
 import com.typesafe.config.ConfigFactory
@@ -47,7 +46,7 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
   "a BankAccount" should {
 
     val CustomerNumber: String = "customerNumber"
-    val AccountNumber: AccountNumber = "accountNumber1"
+    val AccountNumber: String = "accountNumber1"
     val persistenceId: String = BankAccountActor.EntityPrefix + AccountNumber
     val bankAccount: ActorRef = system.actorOf(BankAccountActor.props, persistenceId)
 
