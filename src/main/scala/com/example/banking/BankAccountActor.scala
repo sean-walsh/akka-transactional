@@ -2,10 +2,10 @@ package com.example.banking
 
 import akka.actor.Props
 import akka.persistence.journal.Tagged
-import com.lightbend.transactional.PersistentSagaActor.Ack
+import com.lightbend.transactional.PersistentTransactionalActor.Ack
 import com.lightbend.transactional.TransactionalEntity
-import com.lightbend.transactional.PersistentSagaActorCommands._
-import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.PersistentTransactionCommands._
+import com.lightbend.transactional.PersistentTransactionEvents._
 
 /**
   * Bank account companion object.
@@ -65,22 +65,22 @@ class BankAccountActor extends TransactionalEntity {
     * behavior in addition if appropriate, just make sure to use stash.
     */
   override def active: Receive = {
-    case StartTransaction(transactionId, _, eventTag, cmd) =>
+    case StartEntityTransaction(transactionId, _, eventTag, cmd) =>
       cmd match {
         case DepositFunds(accountNumber, amount) =>
-          val started = TransactionStarted(transactionId, accountNumber, eventTag, FundsDeposited(accountNumber, amount))
+          val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, FundsDeposited(accountNumber, amount))
           persist(Tagged(started, Set(eventTag))) { _ =>
             onTransactionStarted(started)
           }
         case WithdrawFunds(accountNumber, amount) =>
           if (state.balance - amount >= 0) {
-            val started = TransactionStarted(transactionId, accountNumber, eventTag, FundsWithdrawn(accountNumber, amount))
+            val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, FundsWithdrawn(accountNumber, amount))
             persist(Tagged(started, Set(eventTag))) { _ =>
               onTransactionStarted(started)
             }
           }
           else {
-            val started = TransactionStarted(transactionId, accountNumber, eventTag, InsufficientFunds(accountNumber,
+            val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, InsufficientFunds(accountNumber,
               state.balance, amount))
             persist(Tagged(started, Set(eventTag))) { _ =>
               onTransactionStarted(started)
@@ -90,7 +90,7 @@ class BankAccountActor extends TransactionalEntity {
     case _: GetBalance => sender() ! Balance(state.pendingBalance, state.balance)
   }
 
-  override def applyTransactionStarted(started: TransactionStarted): Unit =
+  override def applyTransactionStarted(started: EntityTransactionStarted): Unit =
     started.event match {
       case _: BankAccountTransactionalEvent =>
         val amount = started.event.asInstanceOf[BankAccountTransactionalEvent].amount

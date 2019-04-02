@@ -5,8 +5,9 @@ import akka.http.scaladsl.model.StatusCodes
 import akka.http.scaladsl.testkit.ScalatestRouteTest
 import akka.testkit.{TestKit, TestProbe}
 import akka.util.Timeout
-import com.lightbend.transactional.PersistentSagaActor.Ack
-import com.lightbend.transactional.PersistentSagaActorCommands._
+import com.lightbend.transactional.BatchingTransactionalActor.StartBatchingTransaction
+import com.lightbend.transactional.PersistentTransactionalActor.Ack
+import com.lightbend.transactional.PersistentTransactionCommands._
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
 import scala.concurrent.duration._
@@ -41,7 +42,7 @@ class BankAccountRoutesSpec extends WordSpecLike
   val bankAccountSagaRegionProbe: TestProbe = TestProbe()
   override val bankAccountSagaRegion = system.actorOf(Props(new Actor {
     override def receive: Receive = {
-      case cmd: StartSaga =>
+      case cmd: StartTransaction =>
         bankAccountSagaRegionProbe.ref ! cmd
         sender() ! Ack
     }
@@ -70,7 +71,7 @@ class BankAccountRoutesSpec extends WordSpecLike
         WithdrawFunds("theAccountNumber", 1000)
       )
 
-      bankAccountSagaRegionProbe.expectMsg(StartSaga(transactionIdGenerator.generateId, "Bank Account Saga", ExpectedCommands))
+      bankAccountSagaRegionProbe.expectMsg(StartBatchingTransaction(transactionIdGenerator.generateId, "Bank Account Saga", ExpectedCommands))
     }
 
     "return accepted with a post of the CreateBankAccount command and send the command to the account region" in {

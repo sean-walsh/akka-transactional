@@ -1,6 +1,6 @@
 package com.example.banking.anomaly
 
-import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalExceptionEvent
+import com.lightbend.transactional.PersistentTransactionEvents.TransactionalExceptionEvent
 
 /**
   * Events issued by a bank account anomaly.

@@ -1,6 +1,6 @@
 package com.example.banking
 
-import com.lightbend.transactional.PersistentSagaActorCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCommand
 
 /**
   * Commands handled by a bank account.

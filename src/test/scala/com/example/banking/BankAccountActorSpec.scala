@@ -7,8 +7,8 @@ import akka.stream.ActorMaterializer
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
 import com.example.banking.BankAccountActor.{Balance, GetBalance}
-import com.lightbend.transactional.PersistentSagaActorCommands._
-import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.PersistentTransactionCommands._
+import com.lightbend.transactional.PersistentTransactionEvents._
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -69,11 +69,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       events.remove(events.size - 1)
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(10))
       val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartTransaction(OriginalTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
+      val cmd = StartEntityTransaction(OriginalTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionStarted(OriginalTransactionId, AccountNumber, nodeEventTag, deposited),
+        EntityTransactionStarted(OriginalTransactionId, AccountNumber, nodeEventTag, deposited),
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -84,14 +84,14 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
 
       events = new ListBuffer[Any]()
       val Withdrawal = WithdrawFunds(AccountNumber, BigDecimal.valueOf(5))
-      val cmd1 = StartTransaction(SecondTransactionId, Withdrawal.accountNumber, nodeEventTag, Withdrawal)
+      val cmd1 = StartEntityTransaction(SecondTransactionId, Withdrawal.accountNumber, nodeEventTag, Withdrawal)
       bankAccount ! cmd1
       val cmd2 = CommitTransaction(OriginalTransactionId, AccountNumber, nodeEventTag)
       bankAccount ! cmd2
 
       val ExpectedEvents = List(
         TransactionCleared(OriginalTransactionId, AccountNumber, nodeEventTag),
-        TransactionStarted(SecondTransactionId, AccountNumber, nodeEventTag, FundsWithdrawn(AccountNumber, 5)),
+        EntityTransactionStarted(SecondTransactionId, AccountNumber, nodeEventTag, FundsWithdrawn(AccountNumber, 5)),
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
@@ -113,11 +113,11 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       events = new ListBuffer[Any]()
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(1))
       val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartTransaction(ThirdTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
+      val cmd = StartEntityTransaction(ThirdTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionStarted(ThirdTransactionId, AccountNumber, nodeEventTag, deposited)
+        EntityTransactionStarted(ThirdTransactionId, AccountNumber, nodeEventTag, deposited)
       )
 
       awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")

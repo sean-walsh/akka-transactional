@@ -12,6 +12,7 @@ import akka.pattern.ask
 import akka.util.Timeout
 import spray.json._
 import BankAccountCommands._
+import com.lightbend.transactional.BatchingTransactionalActor.StartBatchingTransaction
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -63,8 +64,6 @@ class TransactionIdGeneratorImpl extends TransactionIdGenerator {
   */
 trait BankAccountRoutes extends BankAccountJsonSupport {
 
-  import com.lightbend.transactional.PersistentSagaActorCommands._
-
   def bankAccountSagaRegion: ActorRef
   def bankAccountRegion: ActorRef
   def transactionIdGenerator: TransactionIdGenerator = new TransactionIdGeneratorImpl
@@ -77,7 +76,7 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
     path("bank-accounts") {
       post {
         entity(as[StartBankAccountTransaction]) { dto =>
-          val start = StartSaga(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
+          val start = StartBatchingTransaction(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
           implicit val timeout: Timeout = Timeout(10.seconds) // TODO: make configurable.
           onSuccess((bankAccountSagaRegion ? start)) {
             case _ => complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
