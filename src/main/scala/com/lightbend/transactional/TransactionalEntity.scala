@@ -3,8 +3,8 @@ package com.lightbend.transactional
 import akka.actor.{ActorLogging, Stash}
 import akka.persistence.PersistentActor
 import akka.persistence.journal.Tagged
-import com.lightbend.transactional.PersistentSagaActorCommands.{CommitTransaction, RollbackTransaction, StartTransaction}
-import com.lightbend.transactional.PersistentSagaActorEvents._
+import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, StartEntityTransaction}
+import com.lightbend.transactional.PersistentTransactionEvents._
 
 /**
   * Mixin for a set of behaviors helpful/necessary to participate in a transactional saga.
@@ -20,7 +20,7 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
   /**
     * Implement this to change state upon persist of TransactionStarted.
     */
-  def applyTransactionStarted(started: TransactionStarted)
+  def applyTransactionStarted(started: EntityTransactionStarted)
 
   /**
     * Implement this to change state upon persist of transaction commit.
@@ -39,7 +39,6 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
 
   /**
     * When in a transaction I can only handle commits and rollbacks.
-    * @param processing TransactionalEvent the event that was the start of this transaction.
     */
   def inTransaction(currentTransactionId: String): Receive = {
     case CommitTransaction(transactionId, entityId, eventTag) =>
@@ -49,11 +48,12 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
       }
 
     case RollbackTransaction(transactionId, entityId, eventTag) =>
-      persist(TransactionReversed(transactionId, entityId, eventTag)) { reversed =>
+      val reversed = TransactionReversed(transactionId, entityId, eventTag)
+      persist(Tagged(reversed, Set(eventTag))) { _ =>
         onTransactionReversed(reversed)
       }
 
-    case StartTransaction(transactionId, _, _, _) if transactionId == currentTransactionId =>
+    case StartEntityTransaction(transactionId, _, _, _) if transactionId == currentTransactionId =>
       // Ignore any duplicate sends of current transaction.
 
     case _ => stash()
@@ -62,7 +62,7 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
   /**
     * Call this on TransactionStarted event persist and recovery.
     */
-  def onTransactionStarted(started: TransactionStarted): Unit =
+  def onTransactionStarted(started: EntityTransactionStarted): Unit =
     started.event match {
       case ex: TransactionalExceptionEvent =>
         applyTransactionException(ex)
@@ -77,7 +77,7 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
     */
   def recover(envelope: TransactionalEventEnvelope): Unit =
     envelope match {
-      case started: TransactionStarted =>
+      case started: EntityTransactionStarted =>
         onTransactionStarted(started)
       case cleared: TransactionCleared =>
         onTransactionCleared(cleared)

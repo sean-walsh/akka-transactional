@@ -8,8 +8,8 @@ import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
-import com.lightbend.transactional.PersistentSagaActor.Ack
-import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
+import com.lightbend.transactional.PersistentTransactionalActor.Ack
+import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
@@ -30,7 +30,7 @@ abstract class TaggedEventSubscription(eventTag: String) extends Actor with Acto
   query.eventsByTag(eventTag, Offset.noOffset).map(_.event).runForeach {
     case envelope: TransactionalEventEnvelope =>
       implicit val timeout: Timeout = Timeout(10.seconds)
-      val sagaRegion = s"/user/${PersistentSagaActor.RegionName}"
+      val sagaRegion = s"/user/${PersistentTransactionalActor.RegionName}"
       (context.actorSelection(sagaRegion) ? envelope).mapTo[Ack].recover {
         case _: Throwable => log.info(s"Could not deliver event to $sagaRegion.")
       }

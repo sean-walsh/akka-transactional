@@ -8,7 +8,8 @@ import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardReg
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
 import com.example.banking.BankAccountCommands.BankAccountCommand
-import com.lightbend.transactional.PersistentSagaActorEvents.TransactionalEventEnvelope
+import com.lightbend.transactional.BatchingTransactionalActor.StartBatchingTransaction
+import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
 import com.lightbend.transactional._
 import com.typesafe.config.ConfigFactory
 
@@ -19,8 +20,6 @@ import scala.math.abs
   * Test friendly abstract application.
   */
 abstract class BaseApp(implicit val system: ActorSystem) {
-
-  import PersistentSagaActorCommands._
 
   lazy val config = ConfigFactory.load()
   implicit val materializer = ActorMaterializer()
@@ -55,11 +54,11 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   // Set up saga cluster sharding
   val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
-    case cmd: StartSaga => (s"${PersistentSagaActor.EntityPrefix}${cmd.transactionId}", cmd)
+    case cmd: StartBatchingTransaction => (s"${PersistentTransactionalActor.EntityPrefix}${cmd.transactionId}", cmd)
   }
   val sagaShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.saga.shard-count")
   val sagaShardIdExtractor: ShardRegion.ExtractShardId = {
-    case cmd: StartSaga =>
+    case cmd: StartBatchingTransaction =>
       abs(cmd.transactionId.hashCode % sagaShardCount).toString
     case msg: TransactionalEventEnvelope =>
       abs(msg.transactionId.hashCode % sagaShardCount).toString
@@ -67,8 +66,8 @@ abstract class BaseApp(implicit val system: ActorSystem) {
       abs(id.hashCode % sagaShardCount).toString
   }
   val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
-    typeName = PersistentSagaActor.RegionName,
-    entityProps = PersistentSagaActor.props(nodeEventTag),
+    typeName = PersistentTransactionalActor.RegionName,
+    entityProps = BatchingTransactionalActor.props(nodeEventTag),
     settings = ClusterShardingSettings(system),
     extractEntityId = sagaEntityIdExtractor,
     extractShardId = sagaShardIdExtractor
@@ -83,8 +82,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   /**
     * Create Akka Http Server
-    *
-    * @return BankAccountHttpServer
     */
   private def createHttpServer(): BankAccountHttpServer = {
     implicit val timeout: Timeout = Timeout(5.seconds)
