@@ -39,7 +39,6 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
 
   /**
     * When in a transaction I can only handle commits and rollbacks.
-    * @param processing TransactionalEvent the event that was the start of this transaction.
     */
   def inTransaction(currentTransactionId: String): Receive = {
     case CommitTransaction(transactionId, entityId, eventTag) =>

@@ -35,8 +35,9 @@ object BankAccountBatchingTransactionSpec {
     """.stripMargin
 }
 
-class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccountSagaSpec", ConfigFactory.parseString(BankAccountBatchingTransactionSpec.Config)))
-  with WordSpecLike with Matchers with ImplicitSender with BeforeAndAfterAll {
+class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccountBatchingTransactionSpec",
+  ConfigFactory.parseString(BankAccountBatchingTransactionSpec.Config))) with WordSpecLike with Matchers
+  with ImplicitSender with BeforeAndAfterAll {
 
   import BankAccountCommands._
   import BankAccountEvents._

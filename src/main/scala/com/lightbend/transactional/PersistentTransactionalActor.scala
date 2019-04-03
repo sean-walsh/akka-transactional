@@ -3,7 +3,7 @@ package com.lightbend.transactional
 import akka.actor.{ActorLogging, ActorNotFound, ActorSelection, Timers}
 import akka.persistence.PersistentActor
 import akka.util.Timeout
-import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCommand
+import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, TransactionalCommand}
 import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
@@ -76,7 +76,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   final protected val RollingBack = "rollingBack"
 
   private var state: BaseTransactionState = BaseTransactionState("", "", Uninitialized, "")
-  protected def getBasicTransactionState(): BaseTransactionState = state
+  protected def getBasicTransactionState(): BaseTransactionState = state.copy()
 
   override def receiveCommand: Receive = uninitialized
 
@@ -102,10 +102,9 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     */
   protected def applyTransactionStartedSideEffects(started: TransactionStarted): Unit = {
     log.info(s"starting new saga with transactionId: ${started.transactionId}")
-    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag)
-    context.become(pending)
     conditionallySpinUpEventSubscriber(state.originalEventTag)
     timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
+    postTransactionStartedSideEffects(started)
   }
 
   /**
@@ -117,11 +116,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * Override this if necessary to determine if it's time to commit.
     */
   protected def commitCondition(): Boolean =
-    if (getBasicTransactionState.pendingConfirmed.size == getBasicTransactionState.commands.size
-      && getBasicTransactionState.exceptions.isEmpty)
-      true
-    else if (getBasicTransactionState.pendingConfirmed.size == getBasicTransactionState.commands.size
-      && getBasicTransactionState.exceptions.isEmpty)
+    if (state.pendingConfirmed.size == state.commands.size)
       true
     else
       false
@@ -188,14 +183,14 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * Used in combination with applyWithPending.
     */
   private def pending: Receive = {
-    case started@EntityTransactionStarted(_, entityId, _, _) =>
+    case started @ EntityTransactionStarted(_, entityId, _, _) =>
       started.event match {
         case _: TransactionalExceptionEvent =>
           if (!state.exceptions.exists(_.entityId == entityId)) {
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
-              applyTransactionStartedEventSideEffects(started)
+              applyEntityTransactionStartedEventSideEffects(started)
             }
           }
         case _ =>
@@ -203,7 +198,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
-              applyTransactionStartedEventSideEffects(started)
+              applyEntityTransactionStartedEventSideEffects(started)
             }
           }
       }
@@ -273,6 +268,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
       state = state.copy(currentState = RollingBack)
       context.become(rollingBack)
     }
+    else {} // Stay in pending
   }
 
   /**
@@ -294,10 +290,29 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     }
   }
 
-  /**
-    * Side effects on EntityTransactionStarted.
-    */
-  protected def applyTransactionStartedEventSideEffects(started: EntityTransactionStarted): Unit
+  private def applyEntityTransactionStartedEventSideEffects(started: EntityTransactionStarted): Unit = {
+    started.event match {
+      case _: TransactionalExceptionEvent =>
+        log.info(s"Transaction rolling back when possible due to exception on account ${started.entityId}.")
+      case _ =>
+    }
+
+    if (getBasicTransactionState().currentState == Committing) {
+      getBasicTransactionState().commands.foreach( cmd =>
+        getShardRegion(cmd.shardRegion) ! CommitTransaction(getBasicTransactionState().transactionId, cmd.entityId,
+          getBasicTransactionState().originalEventTag)
+      )
+    }
+    else if (getBasicTransactionState().currentState == RollingBack) {
+      getBasicTransactionState().pendingConfirmed.foreach( entityId =>
+        getShardRegion(getBasicTransactionState().commands
+          .find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
+          getBasicTransactionState().transactionId, entityId, getBasicTransactionState().originalEventTag)
+      )
+    }
+    else {}
+      // Do nothing if still pending.
+  }
 
   // Checks for rollback condition.
   private def rollbackCondition(): Boolean =
