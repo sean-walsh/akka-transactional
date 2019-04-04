@@ -1,7 +1,7 @@
 package com.lightbend.transactional
 
-import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, StartEntityTransaction, StartTransaction, TransactionalCommand}
-import com.lightbend.transactional.PersistentTransactionalActor.{Ack, GetTransactionState}
+import com.lightbend.transactional.PersistentTransactionCommands.{StartEntityTransaction, StartTransaction, TransactionalCommand}
+import com.lightbend.transactional.PersistentTransactionalActor.{Ack, GetTransactionState, TransactionState}
 import akka.actor.{Props, ReceiveTimeout}
 import akka.persistence.RecoveryCompleted
 import com.lightbend.transactional.PersistentTransactionEvents._
@@ -24,7 +24,7 @@ class BatchingTransactionalActor(nodeEventTag: String) extends PersistentTransac
 
   import BatchingTransactionalActor._
 
-  override val additionalTransactionState = None
+  override protected var additionalTransactionState: Option[TransactionState] = None
 
   override protected def uninitialized: Receive = {
     case StartBatchingTransaction(transactionId, description, commands) =>
@@ -69,7 +69,7 @@ class BatchingTransactionalActor(nodeEventTag: String) extends PersistentTransac
       applyTransactionCleared(cleared)
     case reversed: TransactionReversed =>
       applyTransactionReversed(reversed)
-    case _: SagaTransactionComplete =>
+    case _: PersistentTransactionComplete =>
       context.stop(self)
     case RecoveryCompleted =>
       if (List(Pending, Committing, RollingBack).contains(getBasicTransactionState().currentState))

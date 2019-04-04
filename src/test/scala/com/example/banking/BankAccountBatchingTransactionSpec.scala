@@ -92,10 +92,10 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
     "commit transaction when no exceptions" in {
       val TransactionId = "transactionId1000"
 
-      var events: ListBuffer[SagaEvent] = new ListBuffer()
+      var events: ListBuffer[PersistentTransactionEvent] = new ListBuffer()
       readJournal.eventsByPersistenceId(s"${PersistentTransactionalActor.EntityPrefix}$TransactionId",
         0L, Long.MaxValue).map(_.event).runForeach {
-        case x: SagaEvent => events = (events += x).sortWith(_.entityId < _.entityId)
+        case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
       }(ActorMaterializer()(system))
 
       val saga = system.actorOf(BatchingTransactionalActor.props(nodeEventTag),
@@ -109,7 +109,7 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
 
       saga ! StartBatchingTransaction(TransactionId, "bank-account-saga", commands)
 
-      val ExpectedEvents: Seq[SagaEvent] = Seq(
+      val ExpectedEvents: Seq[PersistentTransactionEvent] = Seq(
         EntityTransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
         TransactionCleared(TransactionId, Account11, nodeEventTag),
         EntityTransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 20)),
@@ -117,7 +117,7 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
         EntityTransactionStarted(TransactionId, Account33, nodeEventTag, FundsDeposited(Account33, 30)),
         TransactionCleared(TransactionId, Account33, nodeEventTag),
         TransactionStarted(TransactionId, "bank-account-saga", nodeEventTag, commands),
-        SagaTransactionComplete(TransactionId)
+        PersistentTransactionComplete(TransactionId)
       )
 
       awaitCond(ExpectedEvents == events, timeout.duration, 100.milliseconds,
@@ -132,10 +132,10 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
     "rollback transaction when with exception on single bank account" in {
       val TransactionId: String = "transactionId2000"
 
-      var events: ListBuffer[SagaEvent] = new ListBuffer()
+      var events: ListBuffer[PersistentTransactionEvent] = new ListBuffer()
       readJournal.eventsByPersistenceId(s"${PersistentTransactionalActor.EntityPrefix}$TransactionId",
         0L, Long.MaxValue).map(_.event).runForeach {
-        case x: SagaEvent => events = (events += x).sortWith(_.entityId < _.entityId)
+        case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
       }(ActorMaterializer()(system))
 
       val saga = system.actorOf(BatchingTransactionalActor.props(nodeEventTag),
@@ -155,7 +155,7 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
         EntityTransactionStarted(TransactionId, Account33, nodeEventTag, FundsDeposited(Account33, 2)),
         TransactionReversed(TransactionId, Account33, nodeEventTag),
         TransactionStarted(TransactionId, "bank-account-saga", nodeEventTag, commands),
-        SagaTransactionComplete(TransactionId)
+        PersistentTransactionComplete(TransactionId)
       )
 
       awaitCond(ExpectedEvents == events, timeout.duration, 100.milliseconds,
@@ -170,10 +170,10 @@ class BankAccountBatchingTransactionSpec extends TestKit(ActorSystem("BankAccoun
     "recover with incomplete saga state with unresponsive bank account" in {
       val TransactionId: String = "transactionId3000"
 
-      var events: ListBuffer[SagaEvent] = new ListBuffer()
+      var events: ListBuffer[PersistentTransactionEvent] = new ListBuffer()
       readJournal.eventsByPersistenceId(s"${PersistentTransactionalActor.EntityPrefix}$TransactionId",
         0L, Long.MaxValue).map(_.event).runForeach {
-        case x: SagaEvent => events = (events += x).sortWith(_.entityId < _.entityId)
+        case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
       }(ActorMaterializer()(system))
 
       val saga = system.actorOf(BatchingTransactionalActor.props(nodeEventTag),

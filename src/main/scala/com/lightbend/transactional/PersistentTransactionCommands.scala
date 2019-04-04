@@ -6,7 +6,7 @@ package com.lightbend.transactional
 object PersistentTransactionCommands {
 
   /** Commands sent to a persistent transaction. **/
-  sealed trait PersistentTransactionCommand
+  trait PersistentTransactionCommand
   trait StartTransaction extends PersistentTransactionCommand // Extend this per implementation.
 
   /** Commands sent to entities **/

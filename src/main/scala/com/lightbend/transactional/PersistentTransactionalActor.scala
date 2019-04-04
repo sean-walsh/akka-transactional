@@ -108,9 +108,9 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   }
 
   /**
-    * This must be called after applyTransactionStartedSideEffects.
+    * Override for additional TransactionStartedSideEffects.
     */
-  protected def postTransactionStartedSideEffects(started: TransactionStarted): Unit
+  protected def postTransactionStartedSideEffects(started: TransactionStarted): Unit = {}
 
   /**
     * Override this if necessary to determine if it's time to commit.
@@ -127,16 +127,28 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   protected def applyTransactionCleared(event: TransactionCleared): Unit = {
     state = state.copy(commitConfirmed = (state.commitConfirmed :+ event.entityId).sortWith(_ < _))
 
+//    if (completionCondition()) {
+//      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
+//        log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
+//        timers.cancel(TimerKey)
+//        context.stop(self)
+//      }
+//    }
+//    else {
+//      state = state.copy(currentState = Committing)
+//      context.become(committing)
+//    }
+  }
+
+  protected def applyTransactionClearedSideEffects(event: TransactionCleared): Unit = {
+    println("***************")
     if (completionCondition()) {
-      persist(SagaTransactionComplete(state.transactionId)) { _ =>
+      println("***************completionCondition")
+      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
         log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
         timers.cancel(TimerKey)
         context.stop(self)
       }
-    }
-    else {
-      state = state.copy(currentState = Committing)
-      context.become(committing)
     }
   }
 
@@ -147,7 +159,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     state = state.copy(rollbackConfirmed = (state.rollbackConfirmed :+ event.entityId).sortWith(_ < _))
 
     if (completionCondition()) {
-      persist(SagaTransactionComplete(state.transactionId)) { _ =>
+      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
         log.info(s"Saga completed with rollback for transactionId: ${state.transactionId}")
         timers.cancel(TimerKey)
         context.stop(self)
@@ -174,7 +186,13 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   /**
     * Holder of any additional state per implementation.
     */
-  protected def additionalTransactionState: Option[TransactionState]
+  protected var additionalTransactionState: Option[TransactionState]
+
+  /**
+    * Call this when a command is added to the transaction. Use with streaming implementations.
+    */
+  protected def commandAdded(command: TransactionalCommand): Unit =
+    state = state.copy(commands = state.commands :+ command)
 
   /**
     * The pending state. No commit OR rollback will occur until all pending events are in place, as per a Saga.
@@ -215,10 +233,14 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     */
   private def committing: Receive = {
     case cleared@TransactionCleared(_, entityId, _) =>
+      println("----------------------1")
       if (!state.commitConfirmed.contains(entityId)) {
+        println("----------------------2")
         persist(cleared) { event =>
+          println("----------------------3")
           sender() ! Ack
           applyTransactionCleared(event)
+          applyTransactionClearedSideEffects(event)
         }
       }
     case Retry =>
@@ -246,7 +268,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
 
   protected def applyTransactionStarted(started: TransactionStarted): Unit = {
     state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, started.commands)
-    context.become(pending)
+    context.become(pending.orElse(applyWithPending))
   }
 
   /**
@@ -290,6 +312,28 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     }
   }
 
+  /**
+    * Override this if necessary.
+    */
+  protected def rollbackCondition(): Boolean =
+    if (state.exceptions.nonEmpty && state.commands.size == state.pendingConfirmed.size + state.exceptions.size)
+      true
+    else
+      false
+
+  /**
+    * Call to force transition due to additional functionality in any impl.
+    */
+  protected def transitionFromPending(): Unit =
+    if (commitCondition()) {
+      state = state.copy(currentState = Committing)
+      context.become(committing)
+    }
+    else {
+      state = state.copy(currentState = RollingBack)
+      context.become(rollingBack)
+    }
+
   private def applyEntityTransactionStartedEventSideEffects(started: EntityTransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
@@ -313,13 +357,6 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     else {}
       // Do nothing if still pending.
   }
-
-  // Checks for rollback condition.
-  private def rollbackCondition(): Boolean =
-    if (!state.exceptions.isEmpty && state.commands.size == state.pendingConfirmed.size + state.exceptions.size)
-      true
-    else
-      false
 
   // Checks for completion condition.
   private def completionCondition(): Boolean = {

@@ -7,23 +7,23 @@ import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCo
   */
 object PersistentTransactionEvents {
 
-  trait SagaEvent {
+  trait PersistentTransactionEvent {
     def transactionId: String
     def entityId: String
   }
 
   /** Events on a transaction itself **/
   case class TransactionStarted(transactionId: String, description: String, nodeEventTag: String,
-                                commands: Seq[TransactionalCommand]) extends SagaEvent {
+                                commands: Seq[TransactionalCommand]) extends PersistentTransactionEvent {
     override val entityId = transactionId
   }
-  case class SagaTransactionComplete(transactionId: String) extends SagaEvent {
+  case class PersistentTransactionComplete(transactionId: String) extends PersistentTransactionEvent {
     override val entityId = transactionId
   }
 
   /** Events on entities **/
   // Envelope to wrap events.
-  trait TransactionalEventEnvelope extends SagaEvent
+  trait TransactionalEventEnvelope extends PersistentTransactionEvent
 
   // Transactional event wrappers.
   case class EntityTransactionStarted(transactionId: String, entityId: String, eventTag: String, event: TransactionalEvent)
