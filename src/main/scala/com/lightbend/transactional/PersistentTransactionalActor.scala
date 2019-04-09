@@ -124,33 +124,17 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   /**
     * Ensure this is called on recovery.
     */
-  protected def applyTransactionCleared(event: TransactionCleared): Unit = {
+  protected def applyTransactionCleared(event: TransactionCleared): Unit =
     state = state.copy(commitConfirmed = (state.commitConfirmed :+ event.entityId).sortWith(_ < _))
 
-//    if (completionCondition()) {
-//      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
-//        log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
-//        timers.cancel(TimerKey)
-//        context.stop(self)
-//      }
-//    }
-//    else {
-//      state = state.copy(currentState = Committing)
-//      context.become(committing)
-//    }
-  }
-
-  protected def applyTransactionClearedSideEffects(event: TransactionCleared): Unit = {
-    println("***************")
+  protected def applyTransactionClearedSideEffects(event: TransactionCleared): Unit =
     if (completionCondition()) {
-      println("***************completionCondition")
       persist(PersistentTransactionComplete(state.transactionId)) { _ =>
         log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
         timers.cancel(TimerKey)
         context.stop(self)
       }
     }
-  }
 
   /**
     * Ensure this is called on recovery.
@@ -191,8 +175,9 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   /**
     * Call this when a command is added to the transaction. Use with streaming implementations.
     */
-  protected def commandAdded(command: TransactionalCommand): Unit =
+  protected def onCommandAdded(command: TransactionalCommand): Unit = {
     state = state.copy(commands = state.commands :+ command)
+  }
 
   /**
     * The pending state. No commit OR rollback will occur until all pending events are in place, as per a Saga.
@@ -208,6 +193,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
+              applyEntityTransactionStartedEventSideEffects(started)
               applyEntityTransactionStartedEventSideEffects(started)
             }
           }
@@ -233,11 +219,8 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     */
   private def committing: Receive = {
     case cleared@TransactionCleared(_, entityId, _) =>
-      println("----------------------1")
       if (!state.commitConfirmed.contains(entityId)) {
-        println("----------------------2")
         persist(cleared) { event =>
-          println("----------------------3")
           sender() ! Ack
           applyTransactionCleared(event)
           applyTransactionClearedSideEffects(event)
@@ -267,7 +250,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   }
 
   protected def applyTransactionStarted(started: TransactionStarted): Unit = {
-    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, started.commands)
+    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, Nil)
     context.become(pending.orElse(applyWithPending))
   }
 
@@ -282,6 +265,10 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
         state = state.copy(pendingConfirmed = (state.pendingConfirmed :+ started.entityId).sortWith(_ < _))
     }
 
+    transitionCheck()
+  }
+
+  protected def transitionCheck(): Unit =
     if (commitCondition()) {
       state = state.copy(currentState = Committing)
       context.become(committing)
@@ -290,8 +277,21 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
       state = state.copy(currentState = RollingBack)
       context.become(rollingBack)
     }
-    else {} // Stay in pending
-  }
+
+  protected def transitionCheckSideEffects(): Unit =
+    if (getBasicTransactionState().currentState == Committing) {
+      getBasicTransactionState().commands.foreach( cmd =>
+        getShardRegion(cmd.shardRegion) ! CommitTransaction(getBasicTransactionState().transactionId, cmd.entityId,
+          getBasicTransactionState().originalEventTag)
+      )
+    }
+    else if (getBasicTransactionState().currentState == RollingBack) {
+      getBasicTransactionState().pendingConfirmed.foreach( entityId =>
+        getShardRegion(getBasicTransactionState().commands
+          .find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
+          getBasicTransactionState().transactionId, entityId, getBasicTransactionState().originalEventTag)
+      )
+    }
 
   /**
     * In the case that this saga has restarted on or been moved to another node, will ensure that there is an event
@@ -321,19 +321,6 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     else
       false
 
-  /**
-    * Call to force transition due to additional functionality in any impl.
-    */
-  protected def transitionFromPending(): Unit =
-    if (commitCondition()) {
-      state = state.copy(currentState = Committing)
-      context.become(committing)
-    }
-    else {
-      state = state.copy(currentState = RollingBack)
-      context.become(rollingBack)
-    }
-
   private def applyEntityTransactionStartedEventSideEffects(started: EntityTransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
@@ -341,21 +328,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
       case _ =>
     }
 
-    if (getBasicTransactionState().currentState == Committing) {
-      getBasicTransactionState().commands.foreach( cmd =>
-        getShardRegion(cmd.shardRegion) ! CommitTransaction(getBasicTransactionState().transactionId, cmd.entityId,
-          getBasicTransactionState().originalEventTag)
-      )
-    }
-    else if (getBasicTransactionState().currentState == RollingBack) {
-      getBasicTransactionState().pendingConfirmed.foreach( entityId =>
-        getShardRegion(getBasicTransactionState().commands
-          .find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
-          getBasicTransactionState().transactionId, entityId, getBasicTransactionState().originalEventTag)
-      )
-    }
-    else {}
-      // Do nothing if still pending.
+    transitionCheckSideEffects()
   }
 
   // Checks for completion condition.
