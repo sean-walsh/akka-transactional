@@ -1,4 +1,4 @@
-name := "akka-saga"
+name := "akka-transactional"
 
 version := "0.1.0"
 
@@ -26,6 +26,6 @@ libraryDependencies ++= Seq(
   "org.scalatest"                 %% "scalatest"                         % "3.0.5"     % "test"
 )
 
-mainClass in Compile := Some("com.example.AkkaSagaApp")
+mainClass in Compile := Some("com.example.AkkaTransactionalApp")
 
 fork := true

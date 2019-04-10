@@ -2,39 +2,69 @@
 
 ## Implementation notes
 
-This is an exploration of how to use akka cluster to perform in a transactional manner. Saga might be a misnomer
-since this is really ACID-like behavior.
+This is an exploration of how to use akka cluster to perform in a transactional manner, providing ACID-like behavior,
+using saga patterns.
 
-The saga itself is a long-running Akka persistent actor, sharded across the cluster. The saga will 
-remain active until either all transactions are committed OR all transactions are rolled back due to 
+The transaction itself is an Akka persistent actor, sharded across the cluster. The transaction will 
+remain active until either all participating entity transactions are committed OR are rolled back due to 
 any error or business exception.
 
-Interestingly, any business persistent actor participating in a saga will essentially be "locked"
-during the saga, meaning that the actor may not participate in any other sagas until the initial 
+Any business persistent actor participating in a transaction will essentially be "locked"
+during the transaction, meaning that the actor may not participate in any other transaction until the initial 
 one has completed. Stash is used for this.
 
-Patterns used here are event sourcing of all business components, including the sage as well as 
-CQRS (just commands for now).
+Patterns used here are event sourcing of all business components, including the transaction.
 
-I used bank accounts as an example, but this pattern can work for anything, such as order to cash, something
+The semantics are commands to entities result in events, that are wrapped in a transactional construct. Events on
+a bank account appear as follows (in shorthand):
+
+Commands
+--------
+StartEntityTransaction(tx1, DepositFunds(1000))
+CommitTransaction(tx1)
+StartEntityTransaction(tx2, WithdrawFunds(1500))
+  
+Resulting Events
+----------------
+EntityTransactionStarted(tx1, FundsDeposited(1000.00))
+TransactionCleared(tx1, FundsDeposited(1000.00))
+EntityTransactionStarted(tx2, InsufficientFunds(1000, 1500))
+
+With the event structure above, it's up to the observer of the events to decide what is of interest. it is
+most likely that only cleared transactions would be observed.
+
+Bank accounts are provided as an example, but this pattern can work for anything, such as order to cash, something
 like depleting inventory due to adding to a shopping cart and having the inventory made
 available again just by rolling back due to shopping cart timeout or cancellation.
 
+This is a useful pattern where strongly consistent designs would be used due to difficult use cases. For example, in
+a trading system, "companies" may be modeled as transactional entities. Additionally there are constraints modeled
+that apply across the companies. If "trade1" is made on any company and does not violate a constraint, it is cleared.
+When "trade2" is made it violates a constraint and is reversed.
+
+The alternative and go-to design would be to model the constraints at the top level, therefore having a bottleneck in
+the system that all trades must go through, completely sacrificing availability.
+
 ## Items of note
 
-PersistentSagaActor - This is the durable transaction that follows the "read your writes" pattern
-to ensure the participating transactional entities have processed the commands.
+BatchingTransactionalActor - This is the durable transaction that follows the "read your writes" pattern
+to ensure the participating transactional entities have processed the commands. This implementation requires
+all commands upon starting the transaction and probably not a good solution when there are very many commands.
+
+StreamingTransactionalActor - This is a streaming implementation that starts a transaction on just and initial
+command. Subsequent commands are received using the AddStreamingCommand command. The end of the stream is
+indicated with the EndStreamingCommands command. Both AddStreamingCommand and EndStreamingCommands have a sequence
+number and no gaps are allowed. This is used to detect a gap in commands, for now the design is to end the
+transaction if a gap occurs.
     
 NodeTaggedEventSubscription - A per node tagged event subscriber that receives events on behalf of the
-entities and relays them to the correct PersistentSagaActor.
-    
-TransientTaggedEventSubscription - Same as above, but is instantiated on demand by any saga that finds
-it has been restarted on another node, with that node's NodeTaggedEventSubscription not picking up the 
-events tagged on the saga's previous node. TransientTaggedEventSubscription MAY also be used for retry when
-events are missing for a configured period of time, although the current implementation just does redelivery
-of commands for now.
+entities and relays them to the correct transaction actor. For scalability purposes there is one of these per
+node. In the case of a transaction that is re-instantiated or moved to another node, a transient event subscription
+will be created on that new node to listen to the original node's tagged events. This transient subscription expires
+after a configured time and can be restarted on demand from the transaction for retry etc.
 
-TransactionalEntity - A trait that abstracts transactional behavior for any participating entity.
+TransactionalEntity - A trait that abstracts transactional behavior for any participating entity. There is very little
+code to implement in order for an entity to participate in transactions.
   
 
 ## The original use case

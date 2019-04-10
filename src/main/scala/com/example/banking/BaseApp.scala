@@ -37,7 +37,7 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
     case cmd: BankAccountCommand => (s"${BankAccountActor.EntityPrefix}${cmd.accountNumber}", cmd)
   }
-  val bankAccountShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.shard-count")
+  val bankAccountShardCount: Int = system.settings.config.getInt("banking.bank-account.shard-count")
   val bankAccountShardIdExtractor: ShardRegion.ExtractShardId = {
     case cmd: BankAccountCommand =>
       abs(cmd.accountNumber.hashCode % bankAccountShardCount).toString
@@ -52,25 +52,25 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     extractShardId = bankAccountShardIdExtractor
   )
 
-  // Set up saga cluster sharding
-  val sagaEntityIdExtractor: ShardRegion.ExtractEntityId = {
+  // Set up transaction cluster sharding
+  val transactionEntityIdExtractor: ShardRegion.ExtractEntityId = {
     case cmd: StartBatchingTransaction => (s"${PersistentTransactionalActor.EntityPrefix}${cmd.transactionId}", cmd)
   }
-  val sagaShardCount: Int = system.settings.config.getInt("akka-saga.bank-account.saga.shard-count")
-  val sagaShardIdExtractor: ShardRegion.ExtractShardId = {
+  val transactionShardCount: Int = system.settings.config.getInt("banking.bank-account.akka-transactional.shard-count")
+  val transactionShardIdExtractor: ShardRegion.ExtractShardId = {
     case cmd: StartBatchingTransaction =>
-      abs(cmd.transactionId.hashCode % sagaShardCount).toString
+      abs(cmd.transactionId.hashCode % transactionShardCount).toString
     case msg: TransactionalEventEnvelope =>
-      abs(msg.transactionId.hashCode % sagaShardCount).toString
+      abs(msg.transactionId.hashCode % transactionShardCount).toString
     case ShardRegion.StartEntity(id) =>
-      abs(id.hashCode % sagaShardCount).toString
+      abs(id.hashCode % transactionShardCount).toString
   }
-  val bankAccountSagaRegion: ActorRef = ClusterSharding(system).start(
+  val bankAccountTransactionRegion: ActorRef = ClusterSharding(system).start(
     typeName = PersistentTransactionalActor.RegionName,
     entityProps = BatchingTransactionalActor.props(nodeEventTag),
     settings = ClusterShardingSettings(system),
-    extractEntityId = sagaEntityIdExtractor,
-    extractShardId = sagaShardIdExtractor
+    extractEntityId = transactionEntityIdExtractor,
+    extractShardId = transactionShardIdExtractor
   )
 
   /**
@@ -85,6 +85,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
     */
   private def createHttpServer(): BankAccountHttpServer = {
     implicit val timeout: Timeout = Timeout(5.seconds)
-    new BankAccountHttpServer(bankAccountRegion, bankAccountSagaRegion)(system, timeout)
+    new BankAccountHttpServer(bankAccountRegion, bankAccountTransactionRegion)(system, timeout)
   }
 }

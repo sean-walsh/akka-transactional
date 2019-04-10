@@ -30,9 +30,9 @@ abstract class TaggedEventSubscription(eventTag: String) extends Actor with Acto
   query.eventsByTag(eventTag, Offset.noOffset).map(_.event).runForeach {
     case envelope: TransactionalEventEnvelope =>
       implicit val timeout: Timeout = Timeout(10.seconds)
-      val sagaRegion = s"/user/${PersistentTransactionalActor.RegionName}"
-      (context.actorSelection(sagaRegion) ? envelope).mapTo[Ack].recover {
-        case _: Throwable => log.info(s"Could not deliver event to $sagaRegion.")
+      val transactionRegion = s"/user/${PersistentTransactionalActor.RegionName}"
+      (context.actorSelection(transactionRegion) ? envelope).mapTo[Ack].recover {
+        case _: Throwable => log.info(s"Could not deliver event to $transactionRegion.")
       }
   }
 
@@ -67,23 +67,22 @@ class NodeTaggedEventSubscription(nodeEventTag: String) extends TaggedEventSubsc
 case object TransientTaggedEventSubscription {
   case class TransientTaggedEventSubscriptionTimedOut(transientEventTag: String)
 
-  def props(transientEventTag: String): Props = Props(new TransientTaggedEventSubscription(transientEventTag))
+  def props(transientEventTag: String, keepAliveDuration: FiniteDuration): Props =
+    Props(new TransientTaggedEventSubscription(transientEventTag, keepAliveDuration))
 }
 
 /**
   * For transient subscriptions that originated on another node. This will always look to timeout.
-  * When it does time out it will issue and event to the event log in case an interested party (saga) is stalled
+  * When it does time out it will issue and event to the event log in case an interested party (transaction) is stalled
   * and still needs a subscription. In that case it will just be restarted by that party until it times out
-  * again and so on until the saga has completed.
+  * again and so on until the transaction has completed.
   */
-class TransientTaggedEventSubscription(transientEventTag: String) extends TaggedEventSubscription(transientEventTag) {
+class TransientTaggedEventSubscription(transientEventTag: String, keepAliveDuration: FiniteDuration)
+  extends TaggedEventSubscription(transientEventTag) {
 
   import TransientTaggedEventSubscription._
 
-  val duration: FiniteDuration = context.system.settings.config
-    .getDuration("akka-saga.saga.transient-event-subscription-timeout").toNanos.nanos
-
-  context.setReceiveTimeout(duration)
+  context.setReceiveTimeout(keepAliveDuration)
 
   override def receive: Receive = {
     case ReceiveTimeout =>

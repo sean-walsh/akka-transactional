@@ -40,7 +40,7 @@ class BankAccountRoutesSpec extends WordSpecLike
 
   // Mock bank account saga region and test probe
   val bankAccountSagaRegionProbe: TestProbe = TestProbe()
-  override val bankAccountSagaRegion = system.actorOf(Props(new Actor {
+  override val bankAccountTransactionRegion = system.actorOf(Props(new Actor {
     override def receive: Receive = {
       case cmd: StartTransaction =>
         bankAccountSagaRegionProbe.ref ! cmd
@@ -71,7 +71,8 @@ class BankAccountRoutesSpec extends WordSpecLike
         WithdrawFunds("theAccountNumber", 1000)
       )
 
-      bankAccountSagaRegionProbe.expectMsg(StartBatchingTransaction(transactionIdGenerator.generateId, "Bank Account Saga", ExpectedCommands))
+      bankAccountSagaRegionProbe.expectMsg(StartBatchingTransaction(transactionIdGenerator.generateId,
+        "Bank Account Transaction", ExpectedCommands))
     }
 
     "return accepted with a post of the CreateBankAccount command and send the command to the account region" in {

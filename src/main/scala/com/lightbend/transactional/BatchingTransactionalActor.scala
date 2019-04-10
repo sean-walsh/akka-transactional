@@ -1,10 +1,12 @@
 package com.lightbend.transactional
 
-import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, StartEntityTransaction, StartTransaction, TransactionalCommand}
-import com.lightbend.transactional.PersistentTransactionalActor.{Ack, GetTransactionState}
+import com.lightbend.transactional.PersistentTransactionCommands.{StartEntityTransaction, StartTransaction, TransactionalCommand}
+import com.lightbend.transactional.PersistentTransactionalActor.{Ack, TransactionState}
 import akka.actor.{Props, ReceiveTimeout}
 import akka.persistence.RecoveryCompleted
 import com.lightbend.transactional.PersistentTransactionEvents._
+
+import scala.concurrent.duration._
 
 object BatchingTransactionalActor {
   case class StartBatchingTransaction(transactionId: String, description: String, commands: Seq[TransactionalCommand])
@@ -24,7 +26,10 @@ class BatchingTransactionalActor(nodeEventTag: String) extends PersistentTransac
 
   import BatchingTransactionalActor._
 
-  override val additionalTransactionState = None
+  override protected var additionalTransactionState: Option[TransactionState] = None
+
+  override protected def retryAfter: FiniteDuration =
+    context.system.settings.config.getDuration("banking.bank-account.akka-transactional.retry-after").toNanos.nanos
 
   override protected def uninitialized: Receive = {
     case StartBatchingTransaction(transactionId, description, commands) =>
@@ -36,8 +41,6 @@ class BatchingTransactionalActor(nodeEventTag: String) extends PersistentTransac
     case ReceiveTimeout =>
       log.error(s"Aborting transaction ${self.path.name} never received StartTransaction command.")
       context.stop(self)
-    case GetTransactionState =>
-      sender() ! (getBasicTransactionState(), null)
   }
 
   override protected def postTransactionStartedSideEffects(started: TransactionStarted): Unit =
@@ -69,7 +72,7 @@ class BatchingTransactionalActor(nodeEventTag: String) extends PersistentTransac
       applyTransactionCleared(cleared)
     case reversed: TransactionReversed =>
       applyTransactionReversed(reversed)
-    case _: SagaTransactionComplete =>
+    case _: PersistentTransactionComplete =>
       context.stop(self)
     case RecoveryCompleted =>
       if (List(Pending, Committing, RollingBack).contains(getBasicTransactionState().currentState))
