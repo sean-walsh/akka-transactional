@@ -18,7 +18,7 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
 /**
-  * A wrapper to start a saga containing bank account transactional commands.
+  * A wrapper to start a transaction containing bank account transactional commands.
   */
 case class StartBankAccountTransaction(deposits: Seq[DepositFundsDto], withdrawals: Seq[WithdrawFundsDto])
 
@@ -64,7 +64,7 @@ class TransactionIdGeneratorImpl extends TransactionIdGenerator {
   */
 trait BankAccountRoutes extends BankAccountJsonSupport {
 
-  def bankAccountSagaRegion: ActorRef
+  def bankAccountTransactionRegion: ActorRef
   def bankAccountRegion: ActorRef
   def transactionIdGenerator: TransactionIdGenerator = new TransactionIdGeneratorImpl
 
@@ -76,9 +76,9 @@ trait BankAccountRoutes extends BankAccountJsonSupport {
     path("bank-accounts") {
       post {
         entity(as[StartBankAccountTransaction]) { dto =>
-          val start = StartBatchingTransaction(transactionIdGenerator.generateId, "Bank Account Saga", dtoToDomain((dto)))
+          val start = StartBatchingTransaction(transactionIdGenerator.generateId, "Bank Account Transaction", dtoToDomain((dto)))
           implicit val timeout: Timeout = Timeout(10.seconds) // TODO: make configurable.
-          onSuccess((bankAccountSagaRegion ? start)) {
+          onSuccess((bankAccountTransactionRegion ? start)) {
             case _ => complete(StatusCodes.Accepted, s"Transaction accepted with id: ${start.transactionId}")
           }
         }

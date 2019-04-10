@@ -14,12 +14,12 @@ import scala.concurrent.duration._
   */
 object PersistentTransactionalActor {
 
-  final val EntityPrefix = "persistent-saga-"
+  final val EntityPrefix = "persistent-transaction-"
 
-  final val RegionName = "persistent-saga"
+  final val RegionName = "persistent-transaction-region"
 
   /**
-    * Use this for asks between saga and entities.
+    * Use this for asks between transactions and entities.
     */
   case class Ack()
 
@@ -65,8 +65,10 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
 
   private case object TimerKey
 
-  private val retryAfter: FiniteDuration =
-    context.system.settings.config.getDuration("akka-saga.bank-account.saga.retry-after").toNanos.nanos
+  /**
+    * Set this according to implementation.
+    */
+  protected def retryAfter: FiniteDuration
 
   context.setReceiveTimeout(10.seconds)
 
@@ -86,7 +88,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * becomes the persistentId. Since cluster sharding only allows construction with objects known when the app
     * starts, we have to send the commands as a second step.
     *
-    * Here, the start of the saga, ReceiveTimeout and GetSagaState should be handled.
+    * Here, the start of the transaction, ReceiveTimeoutshould be handled.
     */
   protected def uninitialized: Receive
 
@@ -101,7 +103,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * This should be called from uninitialized state to transition into pending.
     */
   protected def applyTransactionStartedSideEffects(started: TransactionStarted): Unit = {
-    log.info(s"starting new saga with transactionId: ${started.transactionId}")
+    log.info(s"starting new transaction with transactionId: ${started.transactionId}")
     conditionallySpinUpEventSubscriber(state.originalEventTag)
     timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
     postTransactionStartedSideEffects(started)
@@ -124,13 +126,13 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   /**
     * Ensure this is called on recovery.
     */
-  protected def applyTransactionCleared(event: TransactionCleared): Unit =
-    state = state.copy(commitConfirmed = (state.commitConfirmed :+ event.entityId).sortWith(_ < _))
+  protected def applyTransactionCleared(cleared: TransactionCleared): Unit =
+    state = state.copy(commitConfirmed = (state.commitConfirmed :+ cleared.entityId).sortWith(_ < _))
 
-  protected def applyTransactionClearedSideEffects(event: TransactionCleared): Unit =
+  protected def onTransactionClearedSideEffects(): Unit =
     if (completionCondition()) {
       persist(PersistentTransactionComplete(state.transactionId)) { _ =>
-        log.info(s"Saga completed successfully for transactionId: ${state.transactionId}")
+        log.info(s"Transaction completed successfully for transactionId: ${state.transactionId}")
         timers.cancel(TimerKey)
         context.stop(self)
       }
@@ -144,7 +146,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
 
     if (completionCondition()) {
       persist(PersistentTransactionComplete(state.transactionId)) { _ =>
-        log.info(s"Saga completed with rollback for transactionId: ${state.transactionId}")
+        log.info(s"Transaction completed with rollback for transactionId: ${state.transactionId}")
         timers.cancel(TimerKey)
         context.stop(self)
       }
@@ -193,8 +195,8 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
-              applyEntityTransactionStartedEventSideEffects(started)
-              applyEntityTransactionStartedEventSideEffects(started)
+              applyEntityTransactionStartedSideEffects(started)
+              applyEntityTransactionStartedSideEffects(started)
             }
           }
         case _ =>
@@ -202,7 +204,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
-              applyEntityTransactionStartedEventSideEffects(started)
+              applyEntityTransactionStartedSideEffects(started)
             }
           }
       }
@@ -223,7 +225,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
         persist(cleared) { event =>
           sender() ! Ack
           applyTransactionCleared(event)
-          applyTransactionClearedSideEffects(event)
+          onTransactionClearedSideEffects()
         }
       }
     case Retry =>
@@ -250,7 +252,7 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
   }
 
   protected def applyTransactionStarted(started: TransactionStarted): Unit = {
-    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, Nil)
+    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, started.commands)
     context.become(pending.orElse(applyWithPending))
   }
 
@@ -265,10 +267,10 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
         state = state.copy(pendingConfirmed = (state.pendingConfirmed :+ started.entityId).sortWith(_ < _))
     }
 
-    transitionCheck()
+    pendingTransitionCheck()
   }
 
-  protected def transitionCheck(): Unit =
+  protected def pendingTransitionCheck(): Unit =
     if (commitCondition()) {
       state = state.copy(currentState = Committing)
       context.become(committing)
@@ -278,24 +280,22 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
       context.become(rollingBack)
     }
 
-  protected def transitionCheckSideEffects(): Unit =
-    if (getBasicTransactionState().currentState == Committing) {
-      getBasicTransactionState().commands.foreach( cmd =>
+  protected def pendingTransitionCheckSideEffects(): Unit =
+    if (getBasicTransactionState().currentState == Committing)
+      getBasicTransactionState().commands.foreach(cmd =>
         getShardRegion(cmd.shardRegion) ! CommitTransaction(getBasicTransactionState().transactionId, cmd.entityId,
           getBasicTransactionState().originalEventTag)
       )
-    }
-    else if (getBasicTransactionState().currentState == RollingBack) {
-      getBasicTransactionState().pendingConfirmed.foreach( entityId =>
+    else if (getBasicTransactionState().currentState == RollingBack)
+      getBasicTransactionState().pendingConfirmed.foreach(entityId =>
         getShardRegion(getBasicTransactionState().commands
           .find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
           getBasicTransactionState().transactionId, entityId, getBasicTransactionState().originalEventTag)
       )
-    }
 
   /**
-    * In the case that this saga has restarted on or been moved to another node, will ensure that there is an event
-    * subscriber for the original eventTag.
+    * In the case that this transaction has restarted on or been moved to another node, will ensure that there
+    * is an event subscriber for the original eventTag.
     *
     * Ensure this is called on RecoveryComplete.
     */
@@ -304,10 +304,13 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
       // Spin up my own event subscriber, unless one already exists.
       implicit val timeout = Timeout(10.seconds)
 
+      val keepAliveDuration: FiniteDuration = context.system.settings.config
+        .getDuration("akka-transactional.transient-event-subscription-timeout").toNanos.nanos
+
       context.actorSelection(s"${TaggedEventSubscription.ActorNamePrefix}/$originalEventTag")
         .resolveOne().recover {
-        case ActorNotFound(_) => context.system.actorOf(TransientTaggedEventSubscription.props(nodeEventTag),
-          s"${TaggedEventSubscription.ActorNamePrefix}/$nodeEventTag")
+        case ActorNotFound(_) => context.system.actorOf(TransientTaggedEventSubscription
+          .props(nodeEventTag, keepAliveDuration),s"${TaggedEventSubscription.ActorNamePrefix}/$nodeEventTag")
       }
     }
   }
@@ -321,14 +324,14 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     else
       false
 
-  private def applyEntityTransactionStartedEventSideEffects(started: EntityTransactionStarted): Unit = {
+  private def applyEntityTransactionStartedSideEffects(started: EntityTransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
         log.info(s"Transaction rolling back when possible due to exception on account ${started.entityId}.")
       case _ =>
     }
 
-    transitionCheckSideEffects()
+    pendingTransitionCheckSideEffects()
   }
 
   // Checks for completion condition.

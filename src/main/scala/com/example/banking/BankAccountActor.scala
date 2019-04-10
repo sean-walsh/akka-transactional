@@ -14,7 +14,7 @@ case object BankAccountActor {
 
   final val EntityPrefix = "bank-account-"
 
-  final val RegionName = "bank-account"
+  final val RegionName = "bank-account-region"
 
   // To query bank account balance.
   case class Balance(pendingBalance: BigDecimal, balance: BigDecimal)
@@ -28,7 +28,7 @@ case object BankAccountActor {
 
 /**
   * I am a bank account modeled as persistent actor.
-  * This entity participates in a transactional saga. If desired, it can be enhanced to function outside of a saga
+  * This entity participates in a transaction. If desired, it can be enhanced to function outside of a transaction
   * as well, in fact I'll do that when I get around to it.
   */
 class BankAccountActor extends TransactionalEntity {

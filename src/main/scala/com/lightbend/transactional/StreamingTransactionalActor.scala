@@ -3,10 +3,11 @@ package com.lightbend.transactional
 import akka.actor.{Props, ReceiveTimeout}
 import akka.persistence.RecoveryCompleted
 import com.lightbend.transactional.PersistentTransactionCommands.{PersistentTransactionCommand, StartEntityTransaction, StartTransaction, TransactionalCommand}
-import com.lightbend.transactional.PersistentTransactionEvents.{EntityTransactionStarted, PersistentTransactionEvent, PersistentTransactionComplete, TransactionCleared, TransactionReversed, TransactionStarted}
+import com.lightbend.transactional.PersistentTransactionEvents.{EntityTransactionStarted, PersistentTransactionComplete, PersistentTransactionEvent, TransactionCleared, TransactionReversed, TransactionStarted}
 import com.lightbend.transactional.PersistentTransactionalActor.{Ack, TransactionState}
 
 import scala.collection.immutable
+import scala.concurrent.duration._
 
 object StreamingTransactionalActor {
   case class AddStreamingCommand(transactionId: String, command: TransactionalCommand, sequence: Long)
@@ -48,6 +49,9 @@ class StreamingTransactionalActor(nodeEventTag: String) extends PersistentTransa
 
   override protected var additionalTransactionState: Option[TransactionState] = Some(StreamingTransactionState())
 
+  override protected def retryAfter: FiniteDuration =
+    context.system.settings.config.getDuration("banking.bank-account.akka-transactional.retry-after").toNanos.nanos
+
   override protected def uninitialized: Receive = {
     case StartStreamingTransaction(transactionId, description, add) =>
       persistAll(immutable.Seq(
@@ -81,11 +85,11 @@ class StreamingTransactionalActor(nodeEventTag: String) extends PersistentTransa
         }
       }
     case EndStreamingCommands(transactionId, sequence) =>
-      persist(StreamingCommandsEnded(transactionId, sequence)) { ended =>
+      persist(StreamingCommandsEnded(transactionId, sequence)) { _ =>
         if (sequence - additionalTransactionState.get.asInstanceOf[StreamingTransactionState].sequenceNum == 1) {
           sender() ! Ack
-          applyStreamingCommandsEnded(ended)
-          transitionCheckSideEffects()
+          onStreamingCommandsEnded()
+          pendingTransitionCheckSideEffects()
         }
         else {
           log.info(s"ending transaction $transactionId due to EndStreamingCommands command out of sequence.")
@@ -134,10 +138,10 @@ class StreamingTransactionalActor(nodeEventTag: String) extends PersistentTransa
       getBasicTransactionState().originalEventTag, added.command)
   }
 
-  private def applyStreamingCommandsEnded(ended: StreamingCommandsEnded): Unit = {
+  private def onStreamingCommandsEnded(): Unit = {
     additionalTransactionState = Some(additionalTransactionState.get.asInstanceOf[StreamingTransactionState]
       .copy(streamingComplete = true))
-    transitionCheck()
+    pendingTransitionCheck()
   }
 
   final override def receiveRecover: Receive = {
@@ -162,7 +166,7 @@ class StreamingTransactionalActor(nodeEventTag: String) extends PersistentTransa
       }
     case ended: StreamingCommandsEnded =>
       if (ended.sequence - additionalTransactionState.get.asInstanceOf[StreamingTransactionState].sequenceNum == 1)
-        applyStreamingCommandsEnded(ended)
+        onStreamingCommandsEnded()
       else {
         log.info(s"stopping recovery of transaction ${ended.transactionId} due to StreamingCommandsEnded command out of sequence.")
         context.stop(self)

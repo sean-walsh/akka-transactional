@@ -3,7 +3,7 @@ package com.lightbend.transactional
 import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCommand
 
 /**
-  * Wrapping "Envelope" events to be handled by entities participating in a saga.
+  * Wrapping "Envelope" events to be handled by entities participating in a transaction.
   */
 object PersistentTransactionEvents {
 
@@ -33,9 +33,9 @@ object PersistentTransactionEvents {
   case class TransactionReversed(transactionId: String, entityId: String, eventTag: String)
     extends TransactionalEventEnvelope
 
-  // Trait for any entity events participating in a saga.
+  // Trait for any entity events participating in a transaction.
   trait TransactionalEvent
 
-  // Trait for any entity events participating in a saga that are exceptions.
+  // Trait for any entity events participating in a transaction that are exceptions.
   trait TransactionalExceptionEvent extends TransactionalEvent
 }

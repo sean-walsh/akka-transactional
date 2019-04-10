@@ -21,8 +21,24 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
+object BankAccountStreamingTransactionSpec {
+
+  val Config =
+    """
+      |akka.actor.provider = "local"
+      |akka.actor.warn-about-java-serializer-usage = "false"
+      |akka.persistence.journal.plugin = "akka.persistence.journal.leveldb"
+      |akka.persistence.journal.leveldb.dir = "target/leveldb"
+      |akka.persistence.snapshot-store.plugin = "akka.persistence.snapshot-store.local"
+      |akka.persistence.snapshot-store.local.dir = "target/snapshots"
+      |banking.bank-account.akka-transactional.transaction-type = "bank account transaction"
+      |banking.bank-account.akka-transactional.retry-after = 5 minutes
+      |akka-transactional.transient-event-subscription-timeout = 5 minutes
+    """.stripMargin
+}
+
 class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccountStreamingTransactionSpec",
-  ConfigFactory.parseString(BankAccountBatchingTransactionSpec.Config))) with WordSpecLike with Matchers
+  ConfigFactory.parseString(BankAccountStreamingTransactionSpec.Config))) with WordSpecLike with Matchers
   with ImplicitSender with BeforeAndAfterAll {
 
   import BankAccountCommands._
@@ -178,7 +194,10 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
       val transaction2 = system.actorOf(StreamingTransactionalActor.props(nodeEventTag),
         s"${PersistentTransactionalActor.EntityPrefix}$TransactionId")
 
-      def awaitState(): = Await.result((transaction2 ? GetTransactionState).mapTo[(BaseTransactionState, TransactionState)], timeout.duration)
+      def awaitState() = Await.result((transaction2 ? GetTransactionState).mapTo[(BaseTransactionState, TransactionState)], timeout.duration)
+
+      awaitCond(awaitState()._1.currentState != "uninitialized", timeout.duration, 100.milliseconds)
+      val state = awaitState()
       state._1.transactionId should be(TransactionId)
       state._1.description should be("bank-accounts-transaction")
       state._1.currentState should be("pending")

@@ -12,7 +12,7 @@ import scala.concurrent.ExecutionContext
   */
 class BankAccountHttpServer(
   override val bankAccountRegion: ActorRef,
-  override val bankAccountSagaRegion: ActorRef,
+  override val bankAccountTransactionRegion: ActorRef,
 )(override implicit val system: ActorSystem, override val timeout: Timeout) extends BankAccountRoutes {
 
   implicit val dispatcher: ExecutionContext = system.dispatcher
