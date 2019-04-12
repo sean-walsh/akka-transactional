@@ -28,8 +28,9 @@ object BankAccountActorSpec {
     """.stripMargin
 }
 
-class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", ConfigFactory.parseString(BankAccountActorSpec.Config)))
-  with WordSpecLike with Matchers with ImplicitSender with BeforeAndAfterAll {
+class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec",
+  ConfigFactory.parseString(BankAccountActorSpec.Config))) with WordSpecLike with Matchers
+  with ImplicitSender with BeforeAndAfterAll {
 
   import BankAccountCommands._
   import BankAccountEvents._
@@ -56,27 +57,27 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
       case x => events += x
     }(ActorMaterializer()(system))
 
-    val nodeEventTag: String = "somenodeeventtag"
-
     "properly initialize with CreateBankAccount command" in {
       bankAccount ! CreateBankAccount(CustomerNumber, AccountNumber)
 
       val ExpectedEvents = ListBuffer(BankAccountCreated(CustomerNumber, AccountNumber))
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "accept pending DepositFunds command and transition to inTransaction state" in {
       events.remove(events.size - 1)
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(10))
       val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartEntityTransaction(OriginalTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
+      val cmd = StartEntityTransaction(OriginalTransactionId, Deposit.accountNumber, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        EntityTransactionStarted(OriginalTransactionId, AccountNumber, nodeEventTag, deposited),
+        EntityTransactionStarted(OriginalTransactionId, AccountNumber, deposited),
       )
 
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "accept commit of DepositFunds for first transaction and transition back to inTransaction state to handle " +
@@ -84,55 +85,59 @@ class BankAccountActorSpec extends TestKit(ActorSystem("BankAccountSpec", Config
 
       events = new ListBuffer[Any]()
       val Withdrawal = WithdrawFunds(AccountNumber, BigDecimal.valueOf(5))
-      val cmd1 = StartEntityTransaction(SecondTransactionId, Withdrawal.accountNumber, nodeEventTag, Withdrawal)
+      val cmd1 = StartEntityTransaction(SecondTransactionId, Withdrawal.accountNumber, Withdrawal)
       bankAccount ! cmd1
-      val cmd2 = CommitTransaction(OriginalTransactionId, AccountNumber, nodeEventTag)
+      val cmd2 = CommitTransaction(OriginalTransactionId, AccountNumber)
       bankAccount ! cmd2
 
       val ExpectedEvents = List(
-        TransactionCleared(OriginalTransactionId, AccountNumber, nodeEventTag),
-        EntityTransactionStarted(SecondTransactionId, AccountNumber, nodeEventTag, FundsWithdrawn(AccountNumber, 5)),
+        TransactionCleared(OriginalTransactionId, AccountNumber, FundsDeposited(AccountNumber, 10)),
+        EntityTransactionStarted(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, 5)),
       )
 
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "accept commit of previously stashed WithdrawFunds and transition back to active state" in {
       events = new ListBuffer[Any]()
-      val cmd = CommitTransaction(SecondTransactionId, AccountNumber, nodeEventTag)
+      val cmd = CommitTransaction(SecondTransactionId, AccountNumber)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionCleared(SecondTransactionId, AccountNumber, nodeEventTag)
+        TransactionCleared(SecondTransactionId, AccountNumber, FundsWithdrawn(AccountNumber, 5))
       )
 
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "start another transaction in order to rollback" in {
       events = new ListBuffer[Any]()
       val Deposit = DepositFunds(AccountNumber, BigDecimal.valueOf(1))
-      val deposited = FundsDeposited(Deposit.accountNumber, Deposit.amount)
-      val cmd = StartEntityTransaction(ThirdTransactionId, Deposit.accountNumber, nodeEventTag, Deposit)
+      val cmd = StartEntityTransaction(ThirdTransactionId, Deposit.accountNumber, Deposit)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        EntityTransactionStarted(ThirdTransactionId, AccountNumber, nodeEventTag, deposited)
+        EntityTransactionStarted(ThirdTransactionId, AccountNumber, FundsDeposited(Deposit.accountNumber, Deposit.amount))
       )
 
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "properly handle a rollback on third transaction" in {
       events = new ListBuffer[Any]()
-      val cmd = RollbackTransaction(ThirdTransactionId, AccountNumber, nodeEventTag)
+      val cmd = RollbackTransaction(ThirdTransactionId, AccountNumber)
       bankAccount ! cmd
 
       val ExpectedEvents = List(
-        TransactionReversed(ThirdTransactionId, AccountNumber, nodeEventTag)
+        TransactionReversed(ThirdTransactionId, AccountNumber, FundsDeposited(AccountNumber,
+          BigDecimal.valueOf(1)))
       )
 
-      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds, s"Expected events of $ExpectedEvents not received.")
+      awaitCond(events == ExpectedEvents, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
     }
 
     "recover" in {

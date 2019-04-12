@@ -40,20 +40,20 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
   /**
     * When in a transaction I can only handle commits and rollbacks.
     */
-  def inTransaction(currentTransactionId: String): Receive = {
-    case CommitTransaction(transactionId, entityId, eventTag) =>
-      val cleared = TransactionCleared(transactionId, entityId, eventTag)
-      persist(Tagged(cleared, Set(eventTag))) { _ =>
+  def inTransaction(currentTransactionId: String, event: TransactionalEvent): Receive = {
+    case CommitTransaction(transactionId, entityId) =>
+      val cleared = TransactionCleared(transactionId, entityId, event)
+      persist(Tagged(cleared, Set(transactionId))) { _ =>
         onTransactionCleared(cleared)
       }
 
-    case RollbackTransaction(transactionId, entityId, eventTag) =>
-      val reversed = TransactionReversed(transactionId, entityId, eventTag)
-      persist(Tagged(reversed, Set(eventTag))) { _ =>
+    case RollbackTransaction(transactionId, entityId) =>
+      val reversed = TransactionReversed(transactionId, entityId, event)
+      persist(Tagged(reversed, Set(transactionId))) { _ =>
         onTransactionReversed(reversed)
       }
 
-    case StartEntityTransaction(transactionId, _, _, _) if transactionId == currentTransactionId =>
+    case StartEntityTransaction(`currentTransactionId`, _, _) =>
       // Ignore any duplicate sends of current transaction.
 
     case _ => stash()
@@ -69,7 +69,7 @@ trait TransactionalEntity extends PersistentActor with ActorLogging with Stash {
         context.become(active) // No need for this entity to wait for transaction completion.
       case _ =>
         applyTransactionStarted(started)
-        context.become(inTransaction(started.transactionId).orElse { case _ => stash })
+        context.become(inTransaction(started.transactionId, started.event).orElse { case _ => stash })
     }
 
   /**

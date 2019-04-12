@@ -14,7 +14,7 @@ object BankAccountCommands {
   trait BankAccountTransactionalCommand extends BankAccountCommand with TransactionalCommand {
     def amount: BigDecimal
 
-    override val shardRegion = BankAccountActor.RegionName
+    override val entityType = BankAccountActor.RegionName
   }
 
   case class CreateBankAccount(customerId: String, accountNumber: String) extends BankAccountCommand

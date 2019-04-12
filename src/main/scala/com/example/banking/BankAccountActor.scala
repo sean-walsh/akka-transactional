@@ -65,24 +65,24 @@ class BankAccountActor extends TransactionalEntity {
     * behavior in addition if appropriate, just make sure to use stash.
     */
   override def active: Receive = {
-    case StartEntityTransaction(transactionId, _, eventTag, cmd) =>
+    case StartEntityTransaction(transactionId, _, cmd) =>
       cmd match {
         case DepositFunds(accountNumber, amount) =>
-          val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, FundsDeposited(accountNumber, amount))
-          persist(Tagged(started, Set(eventTag))) { _ =>
+          val started = EntityTransactionStarted(transactionId, accountNumber, FundsDeposited(accountNumber, amount))
+          persist(Tagged(started, Set(transactionId))) { _ =>
             onTransactionStarted(started)
           }
         case WithdrawFunds(accountNumber, amount) =>
           if (state.balance - amount >= 0) {
-            val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, FundsWithdrawn(accountNumber, amount))
-            persist(Tagged(started, Set(eventTag))) { _ =>
+            val started = EntityTransactionStarted(transactionId, accountNumber, FundsWithdrawn(accountNumber, amount))
+            persist(Tagged(started, Set(transactionId))) { _ =>
               onTransactionStarted(started)
             }
           }
           else {
-            val started = EntityTransactionStarted(transactionId, accountNumber, eventTag, InsufficientFunds(accountNumber,
+            val started = EntityTransactionStarted(transactionId, accountNumber, InsufficientFunds(accountNumber,
               state.balance, amount))
-            persist(Tagged(started, Set(eventTag))) { _ =>
+            persist(Tagged(started, Set(transactionId))) { _ =>
               onTransactionStarted(started)
             }
           }
