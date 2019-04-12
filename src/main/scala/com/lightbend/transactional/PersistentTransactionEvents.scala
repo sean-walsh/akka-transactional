@@ -13,11 +13,22 @@ object PersistentTransactionEvents {
   }
 
   /** Events on a transaction itself **/
-  case class TransactionStarted(transactionId: String, description: String, nodeEventTag: String,
-                                commands: Seq[TransactionalCommand]) extends PersistentTransactionEvent {
+  case class TransactionStarted(transactionId: String, description: String)
+    extends PersistentTransactionEvent {
     override val entityId = transactionId
   }
   case class PersistentTransactionComplete(transactionId: String) extends PersistentTransactionEvent {
+    override val entityId = transactionId
+  }
+  case class StreamingTransactionStarted(transactionId: String, description: String, nodeEventTag: String)
+    extends PersistentTransactionEvent {
+    override val entityId = transactionId
+  }
+  case class StreamingCommandAdded(transactionId: String, command: TransactionalCommand, sequence: Long)
+    extends PersistentTransactionEvent {
+    override val entityId = transactionId
+  }
+  case class StreamingCommandsEnded(transactionId: String, sequence: Long) extends PersistentTransactionEvent {
     override val entityId = transactionId
   }
 
@@ -26,11 +37,11 @@ object PersistentTransactionEvents {
   trait TransactionalEventEnvelope extends PersistentTransactionEvent
 
   // Transactional event wrappers.
-  case class EntityTransactionStarted(transactionId: String, entityId: String, eventTag: String, event: TransactionalEvent)
+  case class EntityTransactionStarted(transactionId: String, entityId: String, event: TransactionalEvent)
     extends TransactionalEventEnvelope
-  case class TransactionCleared(transactionId: String, entityId: String, eventTag: String)
+  case class TransactionCleared(transactionId: String, entityId: String, event: TransactionalEvent)
     extends TransactionalEventEnvelope
-  case class TransactionReversed(transactionId: String, entityId: String, eventTag: String)
+  case class TransactionReversed(transactionId: String, entityId: String, event: TransactionalEvent)
     extends TransactionalEventEnvelope
 
   // Trait for any entity events participating in a transaction.

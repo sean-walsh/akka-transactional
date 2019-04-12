@@ -1,14 +1,11 @@
 package com.example.banking
 
-import java.util.UUID
-
 import akka.actor.{ActorRef, ActorSystem}
 import akka.cluster.Cluster
 import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import akka.stream.ActorMaterializer
-import akka.util.Timeout
 import com.example.banking.BankAccountCommands.BankAccountCommand
-import com.lightbend.transactional.BatchingTransactionalActor.StartBatchingTransaction
+import com.lightbend.transactional.PersistentTransactionCommands.StartTransaction
 import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
 import com.lightbend.transactional._
 import com.typesafe.config.ConfigFactory
@@ -25,13 +22,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   implicit val materializer = ActorMaterializer()
   implicit val executionContext = system.dispatcher
   implicit val cluster = Cluster(system)
-
-  // Generate a unique eventTag to be used for tagging all event for entities instantiated on this node.
-  val nodeEventTag: String = UUID.randomUUID().toString
-
-  // Per node event subscriber.
-  system.actorOf(NodeTaggedEventSubscription.props(nodeEventTag),
-    s"${TaggedEventSubscription.ActorNamePrefix}$nodeEventTag")
 
   // Set up bank account cluster sharding
   val bankAccountEntityIdExtractor: ShardRegion.ExtractEntityId = {
@@ -54,20 +44,28 @@ abstract class BaseApp(implicit val system: ActorSystem) {
 
   // Set up transaction cluster sharding
   val transactionEntityIdExtractor: ShardRegion.ExtractEntityId = {
-    case cmd: StartBatchingTransaction => (s"${PersistentTransactionalActor.EntityPrefix}${cmd.transactionId}", cmd)
+    case cmd: StartTransaction => (s"${PersistentTransactionalActor.EntityPrefix}${cmd.transactionId}", cmd)
   }
   val transactionShardCount: Int = system.settings.config.getInt("banking.bank-account.akka-transactional.shard-count")
+
   val transactionShardIdExtractor: ShardRegion.ExtractShardId = {
-    case cmd: StartBatchingTransaction =>
+    case cmd: StartTransaction =>
       abs(cmd.transactionId.hashCode % transactionShardCount).toString
     case msg: TransactionalEventEnvelope =>
       abs(msg.transactionId.hashCode % transactionShardCount).toString
     case ShardRegion.StartEntity(id) =>
       abs(id.hashCode % transactionShardCount).toString
   }
+
+  val retryAfter: FiniteDuration =
+    system.settings.config.getDuration("banking.bank-account.akka-transactional.retry-after").toNanos.nanos
+
+  val timeoutAfter: FiniteDuration =
+    system.settings.config.getDuration("banking.bank-account.akka-transactional.timeout-after").toNanos.nanos
+
   val bankAccountTransactionRegion: ActorRef = ClusterSharding(system).start(
     typeName = PersistentTransactionalActor.RegionName,
-    entityProps = BatchingTransactionalActor.props(nodeEventTag),
+    entityProps = PersistentTransactionalActor.props(retryAfter, timeoutAfter),
     settings = ClusterShardingSettings(system),
     extractEntityId = transactionEntityIdExtractor,
     extractShardId = transactionShardIdExtractor
@@ -76,15 +74,6 @@ abstract class BaseApp(implicit val system: ActorSystem) {
   /**
     * Main function for running the app.
     */
-  protected def run(): Unit = {
-    createHttpServer()
-  }
-
-  /**
-    * Create Akka Http Server
-    */
-  private def createHttpServer(): BankAccountHttpServer = {
-    implicit val timeout: Timeout = Timeout(5.seconds)
-    new BankAccountHttpServer(bankAccountRegion, bankAccountTransactionRegion)(system, timeout)
-  }
+  protected def run(): Unit =
+    new BankingServer()
 }

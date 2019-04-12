@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.example.banking.grpc";
+option java_outer_classname = "BankingProto";
+
+package banking;
+
+service BankingService {
+    rpc BankAccountTransaction (BankAccountTransactionRequest) returns (BankAccountTransactionReply) {}
+
+    rpc AddBankingCommand (stream AddBankingCommandRequest) returns (stream AddBankingCommandReply) {}
+
+    rpc EndStreamingCommands (EndStreamingCommandsRequest) returns (EndStreamingCommandsReply) {}
+}
+
+message BankAccountTransactionRequest {}
+
+message BankAccountTransactionReply {
+    string transactionId = 1;
+}
+
+message AddBankingCommandRequest {
+    string transactionId = 1;
+    string bankAccount = 2;
+    string commandType = 3;
+    float amount = 4;
+    int64 sequence = 5;
+}
+
+message AddBankingCommandReply {
+    string message = 1;
+}
+
+message EndStreamingCommandsRequest {
+    string transactionId = 1;
+    int64 sequence = 2;
+}
+
+message EndStreamingCommandsReply {
+    string message = 1;
+}

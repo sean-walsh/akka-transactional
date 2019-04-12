@@ -1,7 +1,5 @@
 package com.example.banking
 
-import java.util.UUID
-
 import akka.actor.{Actor, ActorSystem, PoisonPill, Props}
 import akka.pattern.ask
 import akka.persistence.query.PersistenceQuery
@@ -11,9 +9,8 @@ import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
 import com.lightbend.transactional.PersistentTransactionCommands._
 import com.lightbend.transactional.PersistentTransactionEvents._
-import com.lightbend.transactional.PersistentTransactionalActor.{BaseTransactionState, GetTransactionState, TransactionState}
-import com.lightbend.transactional.StreamingTransactionalActor.{AddStreamingCommand, EndStreamingCommands, StartStreamingTransaction, StreamingCommandAdded, StreamingCommandsEnded}
-import com.lightbend.transactional.{NodeTaggedEventSubscription, PersistentTransactionalActor, StreamingTransactionalActor, TaggedEventSubscription}
+import com.lightbend.transactional.PersistentTransactionalActor.{TransactionState, GetTransactionState}
+import com.lightbend.transactional.PersistentTransactionalActor
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
@@ -21,7 +18,7 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-object BankAccountStreamingTransactionSpec {
+object BankAccountTransactionSpec {
 
   val Config =
     """
@@ -33,12 +30,12 @@ object BankAccountStreamingTransactionSpec {
       |akka.persistence.snapshot-store.local.dir = "target/snapshots"
       |banking.bank-account.akka-transactional.transaction-type = "bank account transaction"
       |banking.bank-account.akka-transactional.retry-after = 5 minutes
-      |akka-transactional.transient-event-subscription-timeout = 5 minutes
+      |banking.bank-account.akka-transactional.timeout-after = 5 minutes
     """.stripMargin
 }
 
-class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccountStreamingTransactionSpec",
-  ConfigFactory.parseString(BankAccountStreamingTransactionSpec.Config))) with WordSpecLike with Matchers
+class BankAccountTransactionSpec extends TestKit(ActorSystem("BankAccountStreamingTransactionSpec",
+  ConfigFactory.parseString(BankAccountTransactionSpec.Config))) with WordSpecLike with Matchers
   with ImplicitSender with BeforeAndAfterAll {
 
   import BankAccountCommands._
@@ -48,7 +45,7 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
     TestKit.shutdownActorSystem(system)
   }
 
-  implicit val timeout = Timeout(5.seconds)
+  implicit val timeout = Timeout(10.seconds)
 
   "a BankAccount Streaming Transaction" should {
     // Bank account shard region mock.
@@ -78,18 +75,13 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
 
     val readJournal = PersistenceQuery(system).readJournalFor[LeveldbReadJournal](LeveldbReadJournal.Identifier)
 
-    // Create node event listener for saga subscription.
-    val nodeEventTag: String = UUID.randomUUID().toString
-    system.actorOf(NodeTaggedEventSubscription.props(nodeEventTag),
-      s"${TaggedEventSubscription.ActorNamePrefix}$nodeEventTag")
-
     // "Create" the bank accounts previously instantiated.
     val CustomerId = "customer1"
     bankAccountRegion ! CreateBankAccount(CustomerId, Account11)
     bankAccountRegion ! CreateBankAccount(CustomerId, Account22)
 
     val TransactionId = "transactionId5001"
-    val transaction = system.actorOf(StreamingTransactionalActor.props(nodeEventTag),
+    val transaction = system.actorOf(PersistentTransactionalActor.props(5.minutes, 5.minutes),
       s"${PersistentTransactionalActor.EntityPrefix}$TransactionId")
 
     "start a streaming transaction and issue the first entity command" in {
@@ -99,12 +91,12 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
         case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
       }(ActorMaterializer()(system))
 
-      transaction ! StartStreamingTransaction(TransactionId, "bank-accounts-transaction",
-        AddStreamingCommand(TransactionId, DepositFunds(Account11, 10), 0L))
+      transaction ! StartTransaction(TransactionId, "bank-accounts-transaction")
+      transaction ! AddStreamingCommand(TransactionId, DepositFunds(Account11, 10), 0L)
 
       val ExpectedEvents: Seq[PersistentTransactionEvent] = Seq(
-        EntityTransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
-        TransactionStarted(TransactionId, "bank-accounts-transaction", nodeEventTag, Nil),
+        EntityTransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10)),
+        TransactionStarted(TransactionId, "bank-accounts-transaction"),
         StreamingCommandAdded(TransactionId, DepositFunds(Account11, 10), 0L)
       )
 
@@ -122,9 +114,9 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
       transaction ! AddStreamingCommand(TransactionId, DepositFunds(Account22, 20), 1L)
 
       val ExpectedEvents: Seq[PersistentTransactionEvent] = Seq(
-        EntityTransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
-        EntityTransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 20)),
-        TransactionStarted(TransactionId, "bank-accounts-transaction", nodeEventTag, Nil),
+        EntityTransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10)),
+        EntityTransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20)),
+        TransactionStarted(TransactionId, "bank-accounts-transaction"),
         StreamingCommandAdded(TransactionId, DepositFunds(Account11, 10), 0L),
         StreamingCommandAdded(TransactionId, DepositFunds(Account22, 20), 1L)
       )
@@ -143,11 +135,11 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
       transaction ! EndStreamingCommands(TransactionId, 2L)
 
       val ExpectedEvents: Seq[PersistentTransactionEvent] = Seq(
-        EntityTransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
-        TransactionCleared(TransactionId, Account11, nodeEventTag),
-        EntityTransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 20)),
-        TransactionCleared(TransactionId, Account22, nodeEventTag),
-        TransactionStarted(TransactionId, "bank-accounts-transaction", nodeEventTag, Nil),
+        EntityTransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10)),
+        TransactionCleared(TransactionId, Account11, FundsDeposited(Account11, 10)),
+        EntityTransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20)),
+        TransactionCleared(TransactionId, Account22, FundsDeposited(Account22, 20)),
+        TransactionStarted(TransactionId, "bank-accounts-transaction"),
         StreamingCommandAdded(TransactionId, DepositFunds(Account11, 10), 0L),
         StreamingCommandAdded(TransactionId, DepositFunds(Account22, 20), 1L),
         StreamingCommandsEnded(TransactionId, 2L),
@@ -156,6 +148,45 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
 
       awaitCond(ExpectedEvents == events, timeout.duration, 100.milliseconds,
         s"Expected events of $ExpectedEvents not received.")
+
+      val probe = TestProbe()
+      probe.watch(transaction)
+      probe.expectTerminated(transaction, timeout.duration)
+    }
+
+    "rollback transaction when with exception on single bank account" in {
+      val TransactionId: String = "transactionId7001"
+
+      var events: ListBuffer[PersistentTransactionEvent] = new ListBuffer()
+      readJournal.eventsByPersistenceId(s"${PersistentTransactionalActor.EntityPrefix}$TransactionId",
+        0L, Long.MaxValue).map(_.event).runForeach {
+        case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
+      }(ActorMaterializer()(system))
+
+      val transaction = system.actorOf(PersistentTransactionalActor.props(5.minutes, 5.minutes),
+        s"${PersistentTransactionalActor.EntityPrefix}$TransactionId")
+      transaction ! StartTransaction(TransactionId, "bank-accounts-transaction")
+      transaction ! AddStreamingCommand(TransactionId, WithdrawFunds(Account11, 50), 0L)
+      transaction ! AddStreamingCommand(TransactionId, DepositFunds(Account22, 1), 1L)
+      transaction ! EndStreamingCommands(TransactionId, 2L)
+
+      val ExpectedEvents: Seq[Any] = Seq(
+        EntityTransactionStarted(TransactionId, Account11, InsufficientFunds(Account11, 10, 50)),
+        EntityTransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 1)),
+        TransactionReversed(TransactionId, Account22, FundsDeposited(Account22, 1)),
+        TransactionStarted(TransactionId, "bank-accounts-transaction"),
+        StreamingCommandAdded(TransactionId, WithdrawFunds(Account11, 50), 0L),
+        StreamingCommandAdded(TransactionId, DepositFunds(Account22, 1), 1L),
+        StreamingCommandsEnded(TransactionId, 2L),
+        PersistentTransactionComplete(TransactionId)
+      )
+
+      awaitCond(ExpectedEvents == events, timeout.duration, 100.milliseconds,
+        s"Expected events of $ExpectedEvents not received.")
+
+      val probe = TestProbe()
+      probe.watch(transaction)
+      probe.expectTerminated(transaction, timeout.duration)
     }
 
     "recover with incomplete saga state with unresponsive bank account" in {
@@ -167,17 +198,17 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
         case x: PersistentTransactionEvent => events = (events += x).sortWith(_.entityId < _.entityId)
       }(ActorMaterializer()(system))
 
-      val transaction = system.actorOf(StreamingTransactionalActor.props(nodeEventTag),
+      val transaction = system.actorOf(PersistentTransactionalActor.props(5.minutes, 5.minutes),
         s"${PersistentTransactionalActor.EntityPrefix}$TransactionId")
-      transaction ! StartStreamingTransaction(TransactionId, "bank-accounts-transaction",
-        AddStreamingCommand(TransactionId, DepositFunds(Account11, 10), 0L))
+      transaction ! StartTransaction(TransactionId, "bank-accounts-transaction")
+      transaction ! AddStreamingCommand(TransactionId, DepositFunds(Account11, 10), 0L)
       transaction ! AddStreamingCommand(TransactionId, DepositFunds(Account22, 20), 1L)
       transaction ! AddStreamingCommand(TransactionId, DepositFunds("badaccountnumber", 40), 2L) // Non-existing account
 
       val ExpectedEvents: Seq[Any] = Seq(
-        EntityTransactionStarted(TransactionId, Account11, nodeEventTag, FundsDeposited(Account11, 10)),
-        EntityTransactionStarted(TransactionId, Account22, nodeEventTag, FundsDeposited(Account22, 20)),
-        TransactionStarted(TransactionId, "bank-accounts-transaction", nodeEventTag, Nil),
+        EntityTransactionStarted(TransactionId, Account11, FundsDeposited(Account11, 10)),
+        EntityTransactionStarted(TransactionId, Account22, FundsDeposited(Account22, 20)),
+        TransactionStarted(TransactionId, "bank-accounts-transaction"),
         StreamingCommandAdded(TransactionId, DepositFunds(Account11, 10), 0L),
         StreamingCommandAdded(TransactionId, DepositFunds(Account22, 20), 1L),
         StreamingCommandAdded(TransactionId, DepositFunds("badaccountnumber", 40), 2L)
@@ -191,22 +222,21 @@ class BankAccountStreamingTransactionSpec extends TestKit(ActorSystem("BankAccou
       transaction ! PoisonPill
       probe.expectTerminated(transaction, timeout.duration)
 
-      val transaction2 = system.actorOf(StreamingTransactionalActor.props(nodeEventTag),
+      val transaction2 = system.actorOf(PersistentTransactionalActor.props(5.minutes, 5.minutes),
         s"${PersistentTransactionalActor.EntityPrefix}$TransactionId")
 
-      def awaitState() = Await.result((transaction2 ? GetTransactionState).mapTo[(BaseTransactionState, TransactionState)], timeout.duration)
+      def awaitState() = Await.result((transaction2 ? GetTransactionState).mapTo[TransactionState], timeout.duration)
 
-      awaitCond(awaitState()._1.currentState != "uninitialized", timeout.duration, 100.milliseconds)
+      awaitCond(awaitState().currentState != "uninitialized", timeout.duration, 100.milliseconds)
       val state = awaitState()
-      state._1.transactionId should be(TransactionId)
-      state._1.description should be("bank-accounts-transaction")
-      state._1.currentState should be("pending")
-      state._1.originalEventTag should be(nodeEventTag)
-      state._1.commands should be(Seq(DepositFunds(Account11, 10), DepositFunds(Account22, 20), DepositFunds("badaccountnumber", 40)))
-      state._1.pendingConfirmed should be(Seq(Account11, Account22))
-      state._1.commitConfirmed should be(Nil)
-      state._1.rollbackConfirmed should be(Nil)
-      state._1.exceptions should be(Nil)
+      state.transactionId should be(TransactionId)
+      state.description should be("bank-accounts-transaction")
+      state.currentState should be("pending")
+      state.commands should be(Seq(DepositFunds(Account11, 10), DepositFunds(Account22, 20), DepositFunds("badaccountnumber", 40)))
+      state.pendingConfirmed should be(Seq(Account11, Account22))
+      state.commitConfirmed should be(Nil)
+      state.rollbackConfirmed should be(Nil)
+      state.exceptions should be(Nil)
     }
   }
 }

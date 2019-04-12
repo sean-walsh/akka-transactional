@@ -1,9 +1,8 @@
 package com.lightbend.transactional
 
-import akka.actor.{ActorLogging, ActorNotFound, ActorSelection, Timers}
+import akka.actor.{ActorLogging, ActorSelection, Props, ReceiveTimeout, Timers}
 import akka.persistence.PersistentActor
-import akka.util.Timeout
-import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, TransactionalCommand}
+import com.lightbend.transactional.PersistentTransactionCommands.{AddStreamingCommand, CommitTransaction, EndStreamingCommands, RollbackTransaction, StartEntityTransaction, StartTransaction, TransactionalCommand}
 import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
@@ -21,24 +20,30 @@ object PersistentTransactionalActor {
   /**
     * Use this for asks between transactions and entities.
     */
-  case class Ack()
+  case class Ack(correlationId: String)
 
   /**
     * This would normally be kept private, but due to the complexity here, it's useful for testing.
     */
-  trait TransactionState
-  case class BaseTransactionState(
+  case class TransactionState(
     transactionId: String,
     description: String,
     currentState: String,
-    originalEventTag: String,
+    streamingComplete: Boolean = false,
+    sequenceNum: Long = 0L,
     commands: Seq[TransactionalCommand] = Seq.empty,
     pendingConfirmed: Seq[String] = Seq.empty,
     commitConfirmed: Seq[String] = Seq.empty,
     rollbackConfirmed: Seq[String] = Seq.empty,
-    exceptions: Seq[TransactionalEventEnvelope] = Seq.empty) extends TransactionState
+    exceptions: Seq[TransactionalEventEnvelope] = Seq.empty)
 
   case object GetTransactionState
+
+  /**
+    * Props factory method.
+    */
+  def props(retryAfter: FiniteDuration, timeoutAfter: FiniteDuration): Props =
+    Props(new PersistentTransactionalActor(retryAfter, timeoutAfter))
 }
 
 /**
@@ -46,9 +51,9 @@ object PersistentTransactionalActor {
   * will be followed, such as retrying rollback over and over as well as retry of transactions over and over if
   * necessary, before rollback.
   *
-  * All persisted transactions will be tagged with the unique-per-node nodeEventTag.
   */
-abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers with PersistentActor with ActorLogging {
+class PersistentTransactionalActor(retryAfter: FiniteDuration, timeoutAfter: FiniteDuration)
+  extends Timers with PersistentActor with ActorLogging {
 
   import PersistentTransactionalActor._
   import PersistentTransactionEvents._
@@ -63,22 +68,23 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     */
   private case object Retry
 
-  private case object TimerKey
-
   /**
-    * Set this according to implementation.
+    * Transaction timeout message. A transaction should not be blocked for very long as the participating entities
+    * are also blocked and subject to stash overflow.
     */
-  protected def retryAfter: FiniteDuration
+  private case object TimeoutTransaction
+
+  private case object RetryTimerKey
+  private case object TimeoutTimerKey
 
   context.setReceiveTimeout(10.seconds)
 
-  final protected val Uninitialized = "uninitialized"
-  final protected val Pending = "pending"
-  final protected val Committing = "committing"
-  final protected val RollingBack = "rollingBack"
+  final private val Uninitialized = "uninitialized"
+  final private val Pending = "pending"
+  final private val Committing = "committing"
+  final private val RollingBack = "rollingBack"
 
-  private var state: BaseTransactionState = BaseTransactionState("", "", Uninitialized, "")
-  protected def getBasicTransactionState(): BaseTransactionState = state.copy()
+  private var state: TransactionState = TransactionState("", "", Uninitialized)
 
   override def receiveCommand: Receive = uninitialized
 
@@ -87,98 +93,17 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * steps since the edge, in this case the restful route, must assign the transactionId, which automatically
     * becomes the persistentId. Since cluster sharding only allows construction with objects known when the app
     * starts, we have to send the commands as a second step.
-    *
-    * Here, the start of the transaction, ReceiveTimeoutshould be handled.
     */
-  protected def uninitialized: Receive
-
-  /**
-    * Override this for additional "pending" state cases per implementation.
-    */
-  protected def applyWithPending: Receive = {
-    case _ => unhandled(_)
-  }
-
-  /**
-    * This should be called from uninitialized state to transition into pending.
-    */
-  protected def applyTransactionStartedSideEffects(started: TransactionStarted): Unit = {
-    log.info(s"starting new transaction with transactionId: ${started.transactionId}")
-    conditionallySpinUpEventSubscriber(state.originalEventTag)
-    timers.startPeriodicTimer(TimerKey, Retry, retryAfter)
-    postTransactionStartedSideEffects(started)
-  }
-
-  /**
-    * Override for additional TransactionStartedSideEffects.
-    */
-  protected def postTransactionStartedSideEffects(started: TransactionStarted): Unit = {}
-
-  /**
-    * Override this if necessary to determine if it's time to commit.
-    */
-  protected def commitCondition(): Boolean =
-    if (state.pendingConfirmed.size == state.commands.size)
-      true
-    else
-      false
-
-  /**
-    * Ensure this is called on recovery.
-    */
-  protected def applyTransactionCleared(cleared: TransactionCleared): Unit =
-    state = state.copy(commitConfirmed = (state.commitConfirmed :+ cleared.entityId).sortWith(_ < _))
-
-  protected def onTransactionClearedSideEffects(): Unit =
-    if (completionCondition()) {
-      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
-        log.info(s"Transaction completed successfully for transactionId: ${state.transactionId}")
-        timers.cancel(TimerKey)
-        context.stop(self)
+  private def uninitialized: Receive = {
+    case StartTransaction(transactionId, description) =>
+      persist(TransactionStarted(transactionId, description)) { started =>
+        sender() ! Ack(transactionId)
+        applyTransactionStarted(started)
+        applyTransactionStartedSideEffects(started)
       }
-    }
-
-  /**
-    * Ensure this is called on recovery.
-    */
-  protected def applyTransactionReversed(event: TransactionReversed): Unit = {
-    state = state.copy(rollbackConfirmed = (state.rollbackConfirmed :+ event.entityId).sortWith(_ < _))
-
-    if (completionCondition()) {
-      persist(PersistentTransactionComplete(state.transactionId)) { _ =>
-        log.info(s"Transaction completed with rollback for transactionId: ${state.transactionId}")
-        timers.cancel(TimerKey)
-        context.stop(self)
-      }
-    }
-  }
-
-  /**
-    * Derive entity's shard region ActorSelection.
-    */
-  protected def getShardRegion(regionName: String): ActorSelection =
-    context.actorSelection(s"/user/$regionName")
-
-  /**
-    * This must be implemented.
-    */
-  protected def retryPendingSideEffects(): Unit
-
-  /**
-    * This must be implemented.
-    */
-  protected def retryCommittingSideEffects(): Unit
-
-  /**
-    * Holder of any additional state per implementation.
-    */
-  protected var additionalTransactionState: Option[TransactionState]
-
-  /**
-    * Call this when a command is added to the transaction. Use with streaming implementations.
-    */
-  protected def onCommandAdded(command: TransactionalCommand): Unit = {
-    state = state.copy(commands = state.commands :+ command)
+    case ReceiveTimeout =>
+      log.error(s"Aborting transaction ${self.path.name} never received StartTransaction command.")
+      context.stop(self)
   }
 
   /**
@@ -188,14 +113,13 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * Used in combination with applyWithPending.
     */
   private def pending: Receive = {
-    case started @ EntityTransactionStarted(_, entityId, _, _) =>
+    case started @ EntityTransactionStarted(_, entityId, _) =>
       started.event match {
         case _: TransactionalExceptionEvent =>
           if (!state.exceptions.exists(_.entityId == entityId)) {
             persist(started) { event =>
               sender() ! Ack
               applyEntityTransactionStarted(event)
-              applyEntityTransactionStartedSideEffects(started)
               applyEntityTransactionStartedSideEffects(started)
             }
           }
@@ -208,10 +132,35 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
             }
           }
       }
+    case AddStreamingCommand(transactionId, command, sequence) =>
+      persist(StreamingCommandAdded(transactionId, command, sequence)) { added =>
+        sender() ! Ack(transactionId)
+
+        if (validSequence(sequence)) {
+          applyStreamingCommandAdded(added)
+          applyStreamingCommandAddedSideEffects(added)
+        }
+        else {
+          log.info(s"ending transaction $transactionId due to command out of sequence.")
+          context.stop(self)
+        }
+      }
+    case EndStreamingCommands(transactionId, sequence) =>
+      persist(StreamingCommandsEnded(transactionId, sequence)) { ended =>
+        if (validSequence(sequence)) {
+          sender() ! Ack(transactionId)
+          applyStreamingCommandsEnded(ended)
+          pendingTransitionCheckSideEffects()
+        }
+        else {
+          log.info(s"ending transaction $transactionId due to EndStreamingCommands command out of sequence.")
+          context.stop(self)
+        }
+      }
     case Retry =>
       retryPendingSideEffects()
     case GetTransactionState =>
-      sender() ! (state, additionalTransactionState)
+      sender() ! state
   }
 
   /**
@@ -220,16 +169,16 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * Here we receive messages from the entities applicable to "committing".
     */
   private def committing: Receive = {
-    case cleared@TransactionCleared(_, entityId, _) =>
+    case cleared@TransactionCleared(transactionId, entityId, _) =>
       if (!state.commitConfirmed.contains(entityId)) {
         persist(cleared) { event =>
-          sender() ! Ack
+          sender() ! Ack(transactionId)
           applyTransactionCleared(event)
-          onTransactionClearedSideEffects()
+          onCommitOrRollbackSideEffects()
         }
       }
     case Retry =>
-      retryCommittingSideEffects()
+      retryCommitSideEffects()
     case GetTransactionState =>
       sender() ! state
   }
@@ -240,26 +189,33 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     * Here we receive event subscription messages applicable to "rollingBack".
     */
   private def rollingBack: Receive = {
-    case reversed@TransactionReversed(_, entityId, _) =>
+    case reversed @ TransactionReversed(transactionId, entityId, _) =>
       if (!state.rollbackConfirmed.contains(entityId)) {
         persist(reversed) { event =>
-          sender() ! Ack
+          sender() ! Ack(transactionId)
           applyTransactionReversed(event)
+          onCommitOrRollbackSideEffects()
         }
       }
+    case Retry =>
+      retryRollbackSideEffects()
     case GetTransactionState =>
       sender() ! state
   }
 
-  protected def applyTransactionStarted(started: TransactionStarted): Unit = {
-    state = BaseTransactionState(started.transactionId, started.description, Pending, started.nodeEventTag, started.commands)
-    context.become(pending.orElse(applyWithPending))
+  private def applyTransactionStarted(started: TransactionStarted): Unit = {
+    state = TransactionState(started.transactionId, started.description, Pending, false)
+    context.become(pending)
   }
 
-  /**
-    * Ensure this is called on recover.
-    */
-  protected def applyEntityTransactionStarted(started: EntityTransactionStarted): Unit = {
+  private def applyTransactionStartedSideEffects(started: TransactionStarted): Unit = {
+    log.info(s"starting new transaction with transactionId: ${started.transactionId}")
+    context.actorOf(TaggedEventSubscription.props(started.transactionId, self))
+    timers.startPeriodicTimer(RetryTimerKey, Retry, retryAfter)
+    timers.startPeriodicTimer(TimeoutTimerKey, TimeoutTransaction, timeoutAfter)
+  }
+
+  private def applyEntityTransactionStarted(started: EntityTransactionStarted): Unit = {
     started.event match {
       case _: TransactionalExceptionEvent =>
         state = state.copy(exceptions = (state.exceptions :+ started).sortWith(_.entityId < _.entityId))
@@ -269,60 +225,6 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
 
     pendingTransitionCheck()
   }
-
-  protected def pendingTransitionCheck(): Unit =
-    if (commitCondition()) {
-      state = state.copy(currentState = Committing)
-      context.become(committing)
-    }
-    else if (rollbackCondition()) {
-      state = state.copy(currentState = RollingBack)
-      context.become(rollingBack)
-    }
-
-  protected def pendingTransitionCheckSideEffects(): Unit =
-    if (getBasicTransactionState().currentState == Committing)
-      getBasicTransactionState().commands.foreach(cmd =>
-        getShardRegion(cmd.shardRegion) ! CommitTransaction(getBasicTransactionState().transactionId, cmd.entityId,
-          getBasicTransactionState().originalEventTag)
-      )
-    else if (getBasicTransactionState().currentState == RollingBack)
-      getBasicTransactionState().pendingConfirmed.foreach(entityId =>
-        getShardRegion(getBasicTransactionState().commands
-          .find(_.entityId == entityId).get.shardRegion) ! RollbackTransaction(
-          getBasicTransactionState().transactionId, entityId, getBasicTransactionState().originalEventTag)
-      )
-
-  /**
-    * In the case that this transaction has restarted on or been moved to another node, will ensure that there
-    * is an event subscriber for the original eventTag.
-    *
-    * Ensure this is called on RecoveryComplete.
-    */
-  protected def conditionallySpinUpEventSubscriber(originalEventTag: String): Unit = {
-    if (originalEventTag != nodeEventTag) {
-      // Spin up my own event subscriber, unless one already exists.
-      implicit val timeout = Timeout(10.seconds)
-
-      val keepAliveDuration: FiniteDuration = context.system.settings.config
-        .getDuration("akka-transactional.transient-event-subscription-timeout").toNanos.nanos
-
-      context.actorSelection(s"${TaggedEventSubscription.ActorNamePrefix}/$originalEventTag")
-        .resolveOne().recover {
-        case ActorNotFound(_) => context.system.actorOf(TransientTaggedEventSubscription
-          .props(nodeEventTag, keepAliveDuration),s"${TaggedEventSubscription.ActorNamePrefix}/$nodeEventTag")
-      }
-    }
-  }
-
-  /**
-    * Override this if necessary.
-    */
-  protected def rollbackCondition(): Boolean =
-    if (state.exceptions.nonEmpty && state.commands.size == state.pendingConfirmed.size + state.exceptions.size)
-      true
-    else
-      false
 
   private def applyEntityTransactionStartedSideEffects(started: EntityTransactionStarted): Unit = {
     started.event match {
@@ -334,13 +236,135 @@ abstract class PersistentTransactionalActor(nodeEventTag: String) extends Timers
     pendingTransitionCheckSideEffects()
   }
 
-  // Checks for completion condition.
-  private def completionCondition(): Boolean = {
-    if (state.currentState == Committing && state.commitConfirmed.size == state.commands.size)
-      true
-    else if (state.currentState == RollingBack && state.rollbackConfirmed.size == state.commands.size - state.exceptions.size)
+  private def applyStreamingCommandAdded(added: StreamingCommandAdded): Unit =
+    state = state.copy(sequenceNum = added.sequence, commands = state.commands :+ added.command)
+
+  private def applyStreamingCommandAddedSideEffects(added: StreamingCommandAdded): Unit =
+    getShardRegion(added.command.entityType) ! StartEntityTransaction(added.transactionId, added.command.entityId,
+      added.command)
+
+  private def applyStreamingCommandsEnded(ended: StreamingCommandsEnded): Unit = {
+    state = state.copy(streamingComplete = true, sequenceNum = ended.sequence)
+    pendingTransitionCheck()
+  }
+
+  private def applyTransactionCleared(cleared: TransactionCleared): Unit =
+    state = state.copy(commitConfirmed = (state.commitConfirmed :+ cleared.entityId).sortWith(_ < _))
+
+  private def pendingTransitionCheck(): Unit =
+    if (canCommit()) {
+      state = state.copy(currentState = Committing)
+      context.become(committing)
+    }
+    else if (canRollback()) {
+      state = state.copy(currentState = RollingBack)
+      context.become(rollingBack)
+    }
+
+  private def pendingTransitionCheckSideEffects(): Unit =
+    if (state.currentState == Committing)
+      state.commands.foreach(cmd =>
+        getShardRegion(cmd.entityType) ! CommitTransaction(state.transactionId, cmd.entityId)
+      )
+    else if (state.currentState == RollingBack)
+      state.pendingConfirmed.foreach(entityId =>
+        getShardRegion(state.commands
+          .find(_.entityId == entityId).get.entityType) ! RollbackTransaction(state.transactionId, entityId)
+      )
+
+  private def applyTransactionReversed(reversed: TransactionReversed): Unit =
+    state = state.copy(rollbackConfirmed = (state.rollbackConfirmed :+ reversed.entityId).sortWith(_ < _))
+
+  private def onCommitOrRollbackSideEffects(): Unit =
+    if (canComplete())
+      persist(PersistentTransactionComplete(state.transactionId)) ( _ =>
+        onPersistentTransactionComplete()
+      )
+
+  private def onPersistentTransactionComplete(): Unit = {
+    log.info(s"Transaction completed successfully for transactionId: ${state.transactionId}")
+    timers.cancelAll()
+    context.stop(self)
+  }
+
+  private def getShardRegion(regionName: String): ActorSelection =
+    context.actorSelection(s"/user/$regionName")
+
+  private def retryPendingSideEffects(): Unit = {
+    log.info(s"retrying commands for transactionId: ${state.transactionId}")
+    state.commands.diff(state.pendingConfirmed).foreach( c =>
+      getShardRegion(c.entityId) ! c
+    )
+  }
+
+  private def retryCommitSideEffects(): Unit = {
+    log.info(s"retrying commit commands for transactionId: ${state.transactionId}")
+    state.commands.diff(state.pendingConfirmed).foreach( c =>
+      getShardRegion(c.entityId) ! c
+    )
+  }
+
+  private def retryRollbackSideEffects(): Unit = {
+    log.info(s"retrying rollback commands for transactionId: ${state.transactionId}")
+    state.commands.diff(state.pendingConfirmed).foreach( c =>
+      getShardRegion(c.entityId) ! c
+    )
+  }
+
+  private def canCommit(): Boolean =
+    if (state.streamingComplete && state.pendingConfirmed.size == state.commands.size)
       true
     else
       false
+
+  private def canRollback(): Boolean =
+    if (state.exceptions.nonEmpty && state.streamingComplete &&
+      state.commands.size == state.pendingConfirmed.size + state.exceptions.size)
+      true
+    else
+      false
+
+  private def canComplete(): Boolean =
+    if (state.currentState == Committing && state.commitConfirmed.size == state.commands.size)
+      true
+    else if (state.currentState == RollingBack
+      && state.rollbackConfirmed.size == state.commands.size - state.exceptions.size)
+      true
+    else
+      false
+
+  private def validSequence(sequence: Long): Boolean =
+    if (sequence == 0L && state.sequenceNum == 0L)
+      true
+    else if (sequence - state.sequenceNum == 1)
+      true
+    else
+      false
+
+  final override def receiveRecover: Receive = {
+    case started: TransactionStarted =>
+      applyTransactionStarted(started)
+    case started: EntityTransactionStarted =>
+      applyEntityTransactionStarted(started)
+    case cleared: TransactionCleared =>
+      applyTransactionCleared(cleared)
+    case reversed: TransactionReversed =>
+      applyTransactionReversed(reversed)
+    case _: PersistentTransactionComplete =>
+      onPersistentTransactionComplete()
+    case added: StreamingCommandAdded =>
+      if (validSequence(added.sequence))
+        applyStreamingCommandAdded(added)
+      else {
+        log.info(s"stopping recovery of transaction ${added.transactionId} due to command out of sequence.")
+        context.stop(self)
+      }
+    case ended @ StreamingCommandsEnded(transactionId, sequence) =>
+      if (validSequence(sequence))
+        applyStreamingCommandsEnded(ended)
+      else {
+        log.info(s"stopping recovery of transaction $transactionId due to StreamingCommandsEnded command out of sequence.")
+        context.stop(self)
+      }
   }
 }
