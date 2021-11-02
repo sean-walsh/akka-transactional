@@ -1,6 +1,6 @@
-package com.example.banking
+package com.example.banking.classic
 
-import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCommand
+import com.akkatransactional.classic.PersistentTransactionCommands.TransactionalCommand
 
 /**
   * Commands handled by a bank account.

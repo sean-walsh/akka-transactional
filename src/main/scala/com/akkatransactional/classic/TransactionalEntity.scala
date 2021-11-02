@@ -1,10 +1,11 @@
-package com.lightbend.transactional
+package com.akkatransactional.classic
 
 import akka.actor.{ActorLogging, Stash}
 import akka.persistence.PersistentActor
 import akka.persistence.journal.Tagged
-import com.lightbend.transactional.PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, StartEntityTransaction}
-import com.lightbend.transactional.PersistentTransactionEvents._
+import com.akkatransactional.classic.PersistentTransactionEvents.{EntityTransactionStarted, TransactionCleared, TransactionReversed, TransactionalEvent, TransactionalEventEnvelope, TransactionalExceptionEvent}
+import PersistentTransactionCommands.{CommitTransaction, RollbackTransaction, StartEntityTransaction}
+import PersistentTransactionEvents._
 
 /**
   * Mixin for a set of behaviors helpful/necessary to participate in a transactional saga.

@@ -1,4 +1,4 @@
-package com.lightbend.transactional
+package com.akkatransactional.classic
 
 /**
   * Wrapping "Envelope" commands to be handled by entities participating in a transaction.

@@ -1,4 +1,4 @@
-package com.lightbend.transactional
+package com.akkatransactional.classic
 
 import akka.actor.{Actor, ActorLogging, ActorRef, Props}
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
@@ -6,7 +6,8 @@ import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
 import akka.persistence.query.scaladsl.EventsByTagQuery
 import akka.persistence.query.{Offset, PersistenceQuery}
 import akka.stream.ActorMaterializer
-import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
+import com.akkatransactional.classic.PersistentTransactionEvents.TransactionalEventEnvelope
+import PersistentTransactionEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
 

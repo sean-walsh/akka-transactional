@@ -1,9 +1,11 @@
-package com.lightbend.transactional
+package com.akkatransactional.classic
 
 import akka.actor.{ActorLogging, ActorSelection, Props, ReceiveTimeout, Timers}
 import akka.persistence.PersistentActor
-import com.lightbend.transactional.PersistentTransactionCommands.{AddStreamingCommand, CommitTransaction, EndStreamingCommands, RollbackTransaction, StartEntityTransaction, StartTransaction, TransactionalCommand}
-import com.lightbend.transactional.PersistentTransactionEvents.TransactionalEventEnvelope
+import com.akkatransactional.classic.PersistentTransactionCommands.TransactionalCommand
+import com.akkatransactional.classic.PersistentTransactionEvents.TransactionalEventEnvelope
+import PersistentTransactionCommands.{AddStreamingCommand, CommitTransaction, EndStreamingCommands, RollbackTransaction, StartEntityTransaction, StartTransaction, TransactionalCommand}
+import PersistentTransactionEvents.TransactionalEventEnvelope
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._

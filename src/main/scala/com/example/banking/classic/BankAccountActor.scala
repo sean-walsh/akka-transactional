@@ -1,11 +1,11 @@
-package com.example.banking
+package com.example.banking.classic
 
 import akka.actor.Props
 import akka.persistence.journal.Tagged
-import com.lightbend.transactional.PersistentTransactionalActor.Ack
-import com.lightbend.transactional.TransactionalEntity
-import com.lightbend.transactional.PersistentTransactionCommands._
-import com.lightbend.transactional.PersistentTransactionEvents._
+import com.akkatransactional.classic.PersistentTransactionalActor.Ack
+import com.akkatransactional.classic.TransactionalEntity
+import com.akkatransactional.classic.PersistentTransactionCommands._
+import com.akkatransactional.classic.PersistentTransactionEvents._
 
 /**
   * Bank account companion object.

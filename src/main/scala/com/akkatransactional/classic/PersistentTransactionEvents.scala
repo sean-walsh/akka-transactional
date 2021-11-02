@@ -1,6 +1,6 @@
-package com.lightbend.transactional
+package com.akkatransactional.classic
 
-import com.lightbend.transactional.PersistentTransactionCommands.TransactionalCommand
+import PersistentTransactionCommands.TransactionalCommand
 
 /**
   * Wrapping "Envelope" events to be handled by entities participating in a transaction.

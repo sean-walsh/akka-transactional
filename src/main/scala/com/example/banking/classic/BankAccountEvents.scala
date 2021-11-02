@@ -1,6 +1,6 @@
-package com.example.banking
+package com.example.banking.classic
 
-import com.lightbend.transactional.PersistentTransactionEvents.{TransactionalEvent, TransactionalExceptionEvent}
+import com.akkatransactional.classic.PersistentTransactionEvents.{TransactionalEvent, TransactionalExceptionEvent}
 
 /**
   * Events issued by a bank account.

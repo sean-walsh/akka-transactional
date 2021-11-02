@@ -1,4 +1,4 @@
-package com.example.banking
+package com.example.banking.classic
 
 import akka.actor.{ActorRef, ActorSystem, PoisonPill, Terminated}
 import akka.persistence.query.journal.leveldb.scaladsl.LeveldbReadJournal
@@ -6,9 +6,9 @@ import akka.persistence.query.PersistenceQuery
 import akka.stream.ActorMaterializer
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import com.example.banking.BankAccountActor.{Balance, GetBalance}
-import com.lightbend.transactional.PersistentTransactionCommands._
-import com.lightbend.transactional.PersistentTransactionEvents._
+import BankAccountActor.{Balance, GetBalance}
+import com.akkatransactional.classic.PersistentTransactionCommands._
+import com.akkatransactional.classic.PersistentTransactionEvents._
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
