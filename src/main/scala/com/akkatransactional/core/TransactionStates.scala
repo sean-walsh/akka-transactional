@@ -55,27 +55,30 @@ final private[core] case class PendingState(
 
   // Apply commands ended event, ensuring it is in sequence, return one of the 3 active states
   def withCommandsEnded(ended: CommandsEnded): TransactionState = {
-    val pendingWithCommandsEnded = this.copy(commandsEnded = true)
+    val pendingWithCommandsEnded = this.copy(commandsEnded = true, sequence = ended.sequence)
 
-    val pending =
-      if (!isValidSequence(ended.sequence))
-        this.copy(outOfSequenceError = true)
-      else
+    val newPending =
+      if (this.isValidSequence(ended.sequence))
         pendingWithCommandsEnded
+      else
+        pendingWithCommandsEnded.copy(outOfSequenceError = true)
 
-    if (pending.isCommitCondition())
+    if (pendingWithCommandsEnded.isCommitCondition())
       CommitState(transactionId)
-    else if (pending.isRollbackCondition())
+    else if (pendingWithCommandsEnded.isRollbackCondition())
       RollbackState(transactionId)
     else
-      pending
+      newPending
   }
 
   // Check the incoming sequence number is in order, meaning nothing was dropped
   def isValidSequence(sequence: Long): Boolean =
-    if (this.sequence == 0 && sequence == 1 || (this.sequence - sequence == 1))
+    if (this.sequence == 0 && this.entities.isEmpty)
       true
-    else false
+    else if (sequence - this.sequence == 1)
+      true
+    else
+      false
 
   // Commit if no errors, commands no longer streaming in and no out of sequence error
   def isCommitCondition(): Boolean = {

@@ -88,7 +88,6 @@ class CheckpointingTransactionalEntityTest extends ScalaTestWithActorTestKit(s""
       doneProbe.expectMessage(Done)
       val stateProbe = TestProbe[ReportedTransactionState]
       tx ! ConfirmEntityEvent(txId, TestEntityPendingEvent(txId, TestEntityType, TestEntityId))
-      Thread.sleep(5000)
       tx ! GetCurrentState(txId, stateProbe.ref)
       stateProbe.expectMessage(ReportedTransactionState(txId, "CommitState"))
     }

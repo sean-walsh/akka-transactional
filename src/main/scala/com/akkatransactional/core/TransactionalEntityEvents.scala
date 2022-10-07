@@ -13,7 +13,7 @@ object TransactionalEntityEvents {
   final case class TransactionStarted(transactionId: String, description: String) extends TransactionEvent
   final case class CommandAdded(transactionId: String, entityId: String, entityType: String,
                                 command: EntityTransactionalCommand, sequence: Int) extends TransactionEvent
-  final case class CommandsEnded(transactionId: String, sequence: Long) extends TransactionEvent
+  final case class CommandsEnded(transactionId: String, sequence: Int) extends TransactionEvent
   final case class EntityEventConfirmed(transactionId: String, entityEvent: EntityEvent) extends TransactionEvent
   final case class EntityErrorReported(transactionId: String, entityEvent: EntityEvent) extends TransactionEvent
   final case class EntityClearingConfirmed(transactionId: String, entityEvent: EntityEvent) extends TransactionEvent
